@@ -293,11 +293,54 @@ def parse_sq(s):
 def banner(text, color_code):
     width = 50
     border = color_code + BOLD + "═" * width + RESET
-    padding = color_code + BOLD + "║" + RESET
     line = color_code + BOLD + "║  " + text.center(width - 4) + "  ║" + RESET
     print(border)
     print(line)
     print(border)
+
+def loser_screen():
+    clear()
+    BG_RED = "\033[41m"
+    W_ON_R = "\033[41m\033[97m\033[1m"
+    lines = [
+        "██╗   ██╗ ██████╗ ██╗   ██╗    ██╗      ██████╗ ███████╗███████╗",
+        "╚██╗ ██╔╝██╔═══██╗██║   ██║    ██║     ██╔═══██╗██╔════╝██╔════╝",
+        " ╚████╔╝ ██║   ██║██║   ██║    ██║     ██║   ██║███████╗█████╗  ",
+        "  ╚██╔╝  ██║   ██║██║   ██║    ██║     ██║   ██║╚════██║██╔══╝  ",
+        "   ██║   ╚██████╔╝╚██████╔╝    ███████╗╚██████╔╝███████║███████╗",
+        "   ╚═╝    ╚═════╝  ╚═════╝     ╚══════╝ ╚═════╝ ╚══════╝╚══════╝",
+    ]
+    taunts = [
+        "  💀  skill issue  💀",
+        "  get absolutely rekt",
+        "  maybe try tic-tac-toe?",
+        "  your king has fallen, peasant",
+        "  L + ratio + bad at chess",
+    ]
+    import random
+    taunt = random.choice(taunts)
+    width = 80
+
+    # Flash the screen red a few times
+    for _ in range(3):
+        clear()
+        print(BG_RED + " " * width * 20 + RESET)
+        time.sleep(0.12)
+        clear()
+        time.sleep(0.08)
+
+    clear()
+    print(BG_RED + " " * width + RESET)
+    print(BG_RED + " " * width + RESET)
+    for line in lines:
+        pad = max(0, (width - len(line)) // 2)
+        print(W_ON_R + " " * pad + line + " " * (width - pad - len(line)) + RESET)
+    print(BG_RED + " " * width + RESET)
+    taunt_pad = max(0, (width - len(taunt)) // 2)
+    print(W_ON_R + " " * taunt_pad + taunt + " " * (width - taunt_pad - len(taunt)) + RESET)
+    print(BG_RED + " " * width + RESET)
+    print(BG_RED + " " * width + RESET)
+    print()
 
 # ── Networking ─────────────────────────────────────────────────────────────────
 
@@ -388,10 +431,8 @@ def game_loop(conn: Connection, my_color: str):
             # Check end conditions for my turn coming up
             if turn == my_color:
                 if is_checkmate(board, my_color, en_passant):
-                    render(board, my_color, last_move=last_move)
-                    print()
-                    banner("CHECKMATE — YOU LOSE! LMAO GET REKT", RED)
-                    input("\n  Press Enter to exit.")
+                    loser_screen()
+                    input("  Press Enter to exit.")
                     return
                 if is_stalemate(board, my_color, en_passant):
                     render(board, my_color, last_move=last_move)
@@ -413,10 +454,8 @@ def game_loop(conn: Connection, my_color: str):
 
         if raw == "resign":
             conn.send({"type": "resign"})
-            render(board, my_color)
-            print()
-            banner("YOU RESIGNED — YOU LOSE!", RED)
-            input("\n  Press Enter to exit.")
+            loser_screen()
+            input("  Press Enter to exit.")
             return
 
         # ── Castling shorthand ─────────────────────────────────────────────
@@ -589,6 +628,251 @@ def game_loop(conn: Connection, my_color: str):
 
         render(board, my_color, last_move=last_move, msg=status_line())
 
+# ── Split-screen local rendering ──────────────────────────────────────────────
+
+ANSI_ESC = "\033["
+
+def strip_ansi(s):
+    import re
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+
+def board_rows(board, view_color, selected=None, valid_moves=None, last_move=None):
+    """Return list of (raw_str, visible_str) pairs for each board row including labels."""
+    valid_set = set(valid_moves) if valid_moves else set()
+    last_set  = set(last_move)   if last_move   else set()
+    flip = (view_color == B)
+    rows = range(7, -1, -1) if not flip else range(8)
+    cols = range(8)         if not flip else range(7, -1, -1)
+
+    lines = []
+    col_label = "   " + "  ".join(chr(ord("a") + c) for c in cols) + "  "
+    lines.append((BOLD + CYAN + col_label + RESET, col_label))
+
+    for r in rows:
+        rank_label = str(r + 1)
+        row_str = BOLD + CYAN + rank_label + " " + RESET
+        for c in cols:
+            piece = board[r][c]
+            is_light = (r + c) % 2 == 0
+            if selected and (r, c) == selected:
+                bg = BG_SEL
+            elif (r, c) in valid_set:
+                bg = BG_MOVE
+            elif (r, c) in last_set:
+                bg = BG_SEL
+            elif is_light:
+                bg = BG_LIGHT
+            else:
+                bg = BG_DARK
+            symbol = PIECES.get(piece, "?")
+            row_str += bg + " " + symbol + " " + RESET
+        row_str += BOLD + CYAN + " " + rank_label + RESET
+        lines.append((row_str, strip_ansi(row_str)))
+
+    lines.append((BOLD + CYAN + col_label + RESET, col_label))
+    return lines
+
+def render_split(board, turn, selected=None, valid_moves=None, last_move=None, msg=""):
+    """Render both boards side by side — White's view left, Black's view right."""
+    clear()
+    GAP = "      "
+    SEP = BOLD + "  ║  " + RESET
+
+    w_rows = board_rows(board, W, selected if turn == W else None,
+                        valid_moves if turn == W else None, last_move)
+    b_rows = board_rows(board, B, selected if turn == B else None,
+                        valid_moves if turn == B else None, last_move)
+
+    w_label = (GREEN if turn == W else WHITE) + BOLD + "  ── White ──" + RESET
+    b_label = (GREEN if turn == B else WHITE) + BOLD + "  ── Black ──" + RESET
+    col_w = 30
+    print(w_label.ljust(col_w + 20) + GAP + b_label)
+
+    for (wr, wv), (br, bv) in zip(w_rows, b_rows):
+        pad = col_w - len(wv)
+        print(wr + " " * max(0, pad) + SEP + br)
+
+    print()
+    if msg:
+        print(msg)
+
+# ── Local (same-PC) game loop ──────────────────────────────────────────────────
+
+def local_game():
+    board      = make_board()
+    en_passant = None
+    castling   = {"wK": True, "wQ": True, "bK": True, "bQ": True}
+    turn       = W
+    selected   = None
+    valid      = []
+    last_move  = []
+    msg        = ""
+
+    def status():
+        who   = (GREEN + BOLD + "WHITE" if turn == W else CYAN + BOLD + "BLACK") + RESET
+        check = " " + RED + BOLD + "(CHECK!)" + RESET if is_in_check(board, turn) else ""
+        return f"  {who}'s turn{check}  —  enter square (e.g. e2) or 'resign'"
+
+    render_split(board, turn, msg=status())
+
+    while True:
+        try:
+            raw = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            print("\n  Quit.")
+            return
+
+        if raw == "resign":
+            loser_screen()
+            input("  Press Enter to exit.")
+            return
+
+        # Castling shorthand
+        if raw in ("o-o", "0-0"):
+            cms = castle_moves(board, turn, castling)
+            ks = [m for m in cms if m[2] == "castle_k"]
+            if ks:
+                board = apply_castle(board, turn, "k")
+                castling[turn+"K"] = False; castling[turn+"Q"] = False
+                last_move = []
+                opp = B if turn == W else W
+                turn = opp
+                if is_checkmate(board, turn, en_passant):
+                    render_split(board, turn, last_move=last_move)
+                    banner(("WHITE" if turn==B else "BLACK") + " WINS BY CHECKMATE!", GREEN)
+                    loser_screen()
+                    input("  Press Enter to exit.")
+                    return
+                render_split(board, turn, last_move=last_move, msg=status())
+            else:
+                render_split(board, turn, selected, valid, last_move,
+                             RED + "  Kingside castling not available." + RESET)
+            continue
+
+        if raw in ("o-o-o", "0-0-0"):
+            cms = castle_moves(board, turn, castling)
+            qs = [m for m in cms if m[2] == "castle_q"]
+            if qs:
+                board = apply_castle(board, turn, "q")
+                castling[turn+"K"] = False; castling[turn+"Q"] = False
+                last_move = []
+                opp = B if turn == W else W
+                turn = opp
+                if is_checkmate(board, turn, en_passant):
+                    render_split(board, turn, last_move=last_move)
+                    banner(("WHITE" if turn==B else "BLACK") + " WINS BY CHECKMATE!", GREEN)
+                    loser_screen()
+                    input("  Press Enter to exit.")
+                    return
+                render_split(board, turn, last_move=last_move, msg=status())
+            else:
+                render_split(board, turn, selected, valid, last_move,
+                             RED + "  Queenside castling not available." + RESET)
+            continue
+
+        sq = parse_sq(raw)
+        if sq is None:
+            render_split(board, turn, selected, valid, last_move,
+                         RED + "  Invalid input. Enter a square like e2, or 'resign'." + RESET)
+            continue
+
+        r, c = sq
+
+        if selected is None:
+            piece = board[r][c]
+            if color_of(piece) != turn:
+                render_split(board, turn, last_move=last_move,
+                             msg=RED + "  That's not your piece." + RESET)
+                continue
+            valid = legal_moves(board, r, c, en_passant)
+            if piece[1] == "K":
+                for cm in castle_moves(board, turn, castling):
+                    valid.append((cm[0], cm[1]))
+            if not valid:
+                render_split(board, turn, last_move=last_move,
+                             msg=YELLOW + "  That piece has no legal moves." + RESET)
+                continue
+            selected = (r, c)
+            render_split(board, turn, selected, valid, last_move,
+                         CYAN + f"  Selected {raw}. Now pick a destination." + RESET)
+            continue
+
+        if (r, c) == selected:
+            selected = None; valid = []
+            render_split(board, turn, last_move=last_move, msg=status())
+            continue
+
+        if (r, c) not in valid:
+            piece = board[r][c]
+            if color_of(piece) == turn:
+                valid = legal_moves(board, r, c, en_passant)
+                if piece[1] == "K":
+                    for cm in castle_moves(board, turn, castling):
+                        valid.append((cm[0], cm[1]))
+                selected = (r, c)
+                render_split(board, turn, selected, valid, last_move,
+                             CYAN + f"  Selected {raw}. Now pick a destination." + RESET)
+            else:
+                render_split(board, turn, selected, valid, last_move,
+                             RED + "  Invalid move. Pick a highlighted square." + RESET)
+            continue
+
+        fr, fc = selected
+        piece = board[fr][fc]
+
+        # Castle via king move
+        if piece[1] == "K" and abs(fc - c) == 2:
+            side = "k" if c > fc else "q"
+            board = apply_castle(board, turn, side)
+            castling[turn+"K"] = False; castling[turn+"Q"] = False
+            last_move = [(fr,fc),(r,c)]; selected = None; valid = []
+            opp = B if turn == W else W; turn = opp
+            if is_checkmate(board, turn, en_passant):
+                render_split(board, turn, last_move=last_move)
+                loser_screen()
+                input("  Press Enter to exit.")
+                return
+            render_split(board, turn, last_move=last_move, msg=status())
+            continue
+
+        # Promotion
+        promo = "Q"
+        if piece[1] == "P" and (r == 0 or r == 7):
+            render_split(board, turn, selected, valid, last_move,
+                         CYAN + "  Promote to? (Q/R/B/N): " + RESET)
+            try:
+                choice = input("  > ").strip().upper()
+                promo = choice if choice in ("Q","R","B","N") else "Q"
+            except:
+                pass
+
+        board, en_passant = apply_move(board, fr, fc, r, c, en_passant, promo)
+        last_move = [(fr,fc),(r,c)]
+
+        for col in [W, B]:
+            row_k = 7 if col == W else 0
+            if board[row_k][4] != col+"K":
+                castling[col+"K"] = False; castling[col+"Q"] = False
+            if board[row_k][7] != col+"R": castling[col+"K"] = False
+            if board[row_k][0] != col+"R": castling[col+"Q"] = False
+
+        selected = None; valid = []
+        opp = B if turn == W else W
+        turn = opp
+
+        if is_checkmate(board, turn, en_passant):
+            render_split(board, turn, last_move=last_move)
+            loser_screen()
+            input("  Press Enter to exit.")
+            return
+        if is_stalemate(board, turn, en_passant):
+            render_split(board, turn, last_move=last_move)
+            banner("STALEMATE — IT'S A DRAW!", YELLOW)
+            input("\n  Press Enter to exit.")
+            return
+
+        render_split(board, turn, last_move=last_move, msg=status())
+
 # ── Entry point ────────────────────────────────────────────────────────────────
 
 def host_game(port):
@@ -642,11 +926,12 @@ def join_game(host_ip, port):
 
 def print_help():
     print(f"""
-{BOLD}{CYAN}  ♔  Terminal Chess — Networked  ♚{RESET}
+{BOLD}{CYAN}  ♔  Terminal Chess  ♚{RESET}
 
   {BOLD}Usage:{RESET}
-    Host a game:  {GREEN}python chess.py host [port]{RESET}
-    Join a game:  {GREEN}python chess.py join <ip> [port]{RESET}
+    Same PC (split-screen):  {GREEN}python chess.py local{RESET}
+    Host a network game:     {GREEN}python chess.py host [port]{RESET}
+    Join a network game:     {GREEN}python chess.py join <ip> [port]{RESET}
 
   {BOLD}In-game controls:{RESET}
     Type a square (e.g. {CYAN}e2{RESET}) to select, then another to move.
@@ -664,7 +949,9 @@ if __name__ == "__main__":
         sys.exit(0)
 
     cmd = args[0].lower()
-    if cmd == "host":
+    if cmd == "local":
+        local_game()
+    elif cmd == "host":
         port = int(args[1]) if len(args) > 1 else DEFAULT_PORT
         host_game(port)
     elif cmd == "join":

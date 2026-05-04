@@ -7,7 +7,6 @@ Usage:
 """
 
 import socket
-import threading
 import sys
 import os
 import json
@@ -18,9 +17,11 @@ import time
 EMPTY = "."
 W, B = "w", "b"
 
+# ♟ (U+265F) is in the Unicode emoji set — Windows Terminal renders it as colored emoji,
+# ignoring ANSI colors. Use ♙ (non-emoji) for black pawns too; color tells them apart.
 PIECES = {
     "wK": "♔", "wQ": "♕", "wR": "♖", "wB": "♗", "wN": "♘", "wP": "♙",
-    "bK": "♚", "bQ": "♛", "bR": "♜", "bB": "♝", "bN": "♞", "bP": "♟",
+    "bK": "♚", "bQ": "♛", "bR": "♜", "bB": "♝", "bN": "♞", "bP": "♙",
     EMPTY: " ",
 }
 
@@ -32,10 +33,10 @@ GREEN  = "\033[92m"
 YELLOW = "\033[93m"
 CYAN   = "\033[96m"
 WHITE  = "\033[97m"
-BG_LIGHT = "\033[48;5;109m"   # slate blue-grey (light squares)
-BG_DARK  = "\033[48;5;23m"    # deep teal (dark squares)
-BG_SEL   = "\033[48;5;136m"   # gold (selected)
-BG_MOVE  = "\033[48;5;58m"    # olive green (legal move hints)
+BG_LIGHT = "\033[48;5;187m"   # cream/tan (chess.com light square)
+BG_DARK  = "\033[48;5;71m"    # medium green (chess.com dark square)
+BG_SEL   = "\033[48;5;220m"   # gold highlight
+BG_MOVE  = "\033[48;5;154m"   # bright lime hint
 FG_WHITE = "\033[1m\033[97m"  # bold bright white — white pieces
 FG_BLACK = "\033[1m\033[30m"  # bold black — black pieces
 
@@ -78,12 +79,16 @@ def _draw_board(board, rows, cols, selected, valid_set, last_set):
         top = "   "
         mid = rl + " "
         for c in cols:
-            bg  = _sq_bg(r, c, selected, valid_set, last_set)
+            bg    = _sq_bg(r, c, selected, valid_set, last_set)
             piece = board[r][c]
-            sym = PIECES.get(piece, "?")
-            fg  = FG_WHITE if (piece != EMPTY and piece[0] == W) else FG_BLACK
-            top += bg + " " * SQ + RESET
-            mid += bg + fg + sym.center(SQ) + RESET
+            sym   = PIECES.get(piece, "?")
+            top  += bg + " " * SQ + RESET
+            if piece == EMPTY:
+                mid += bg + " " * SQ + RESET
+            else:
+                fg   = FG_WHITE if piece[0] == W else FG_BLACK
+                pad  = (SQ - 1) // 2  # 2 spaces each side for SQ=5
+                mid += bg + " " * pad + RESET + bg + fg + sym + RESET + bg + " " * pad + RESET
         top += "   "
         mid += " " + rl
         print(top)
@@ -241,7 +246,6 @@ def is_stalemate(board, color, en_passant=None):
 def castle_moves(board, color, castling_rights):
     moves = []
     row = 0 if color == W else 7
-    king_sq = (row, 4)
     if board[row][4] != color + "K":
         return moves
     if is_in_check(board, color):
@@ -290,8 +294,11 @@ def parse_sq(s):
     s = s.strip().lower()
     if len(s) != 2:
         return None
-    c = ord(s[0]) - ord("a")
-    r = int(s[1]) - 1
+    try:
+        c = ord(s[0]) - ord("a")
+        r = int(s[1]) - 1
+    except (ValueError, TypeError):
+        return None
     if not in_bounds(r, c):
         return None
     return (r, c)
@@ -650,7 +657,8 @@ def render_local(board, turn, selected=None, valid_moves=None, last_move=None, m
     label = who + ("  ── WHITE's turn  (your pieces: bottom 2 rows) ──"
                    if turn == W else
                    "  ── BLACK's turn  (your pieces: bottom 2 rows) ──") + RESET
-    print(label)
+    adv = _material(board)
+    print(label + "   " + adv)
     print()
     _draw_board(board, rows, cols, selected, valid_set, last_set)
     print()
@@ -658,6 +666,53 @@ def render_local(board, turn, selected=None, valid_moves=None, last_move=None, m
         print(msg)
 
 # ── Local (same-PC) game loop ──────────────────────────────────────────────────
+
+def _sq_name(r, c):
+    return chr(ord("a") + c) + str(r + 1)
+
+PIECE_VALUES = {"P": 1, "N": 3, "B": 3, "R": 5, "Q": 9, "K": 0}
+
+def _material(board):
+    """Returns (white_score, black_score) and advantage string."""
+    ws = sum(PIECE_VALUES[p[1]] for row in board for p in row if p != EMPTY and p[0] == W)
+    bs = sum(PIECE_VALUES[p[1]] for row in board for p in row if p != EMPTY and p[0] == B)
+    diff = ws - bs
+    if diff > 0:
+        adv = GREEN + BOLD + f"+{diff} White" + RESET
+    elif diff < 0:
+        adv = CYAN + BOLD + f"+{-diff} Black" + RESET
+    else:
+        adv = YELLOW + "Equal" + RESET
+    return adv
+
+def _browse_history(history, view_turn):
+    """Let the user scroll through past board states. Returns when they press Enter."""
+    if not history:
+        return
+    idx = len(history) - 1
+    while True:
+        snap_board, snap_lm, snap_label = history[idx]
+        clear()
+        total = len(history)
+        nav = (BOLD + CYAN + f"  Move {idx + 1}/{total}  " + RESET +
+               "  ◄ '<'  ►'>'  back to game: Enter")
+        print(nav)
+        print(BOLD + "  " + snap_label + RESET)
+        print()
+        rows = range(7, -1, -1) if view_turn == W else range(8)
+        cols = range(8)
+        _draw_board(snap_board, rows, cols, None, set(), set(snap_lm))
+        print()
+        try:
+            key = input("  > ").strip().lower()
+        except (EOFError, KeyboardInterrupt):
+            return
+        if key in ("<", "b", "back") and idx > 0:
+            idx -= 1
+        elif key in (">", "f", "forward") and idx < total - 1:
+            idx += 1
+        elif key == "":
+            return
 
 def local_game():
     board      = make_board()
@@ -667,20 +722,29 @@ def local_game():
     selected   = None
     valid      = []
     last_move  = []
-    msg        = ""
+    history    = []   # list of (board_snapshot, last_move, label)
+    move_num   = 1
+
+    import copy
+
+    def snapshot(label):
+        history.append((copy.deepcopy(board), list(last_move), label))
 
     def status():
         who   = (GREEN + BOLD + "WHITE" if turn == W else CYAN + BOLD + "BLACK") + RESET
         check = " " + RED + BOLD + "(CHECK!)" + RESET if is_in_check(board, turn) else ""
-        return f"  {who}'s turn{check}  —  e.g. 'e2 e4' or 'e2' then 'e4', or 'resign'"
+        hist_hint = YELLOW + "  '<'/'>' history" + RESET
+        return f"  {who}'s turn{check}  —  e.g. 'e2 e4'  |{hist_hint}"
 
     render_local(board, turn, msg=status())
 
     def do_move(fr, fc, tr, tc):
         """Execute a validated move. Returns 'checkmate', 'stalemate', or None."""
-        nonlocal board, en_passant, turn, selected, valid, last_move
+        nonlocal board, en_passant, turn, selected, valid, last_move, move_num
 
         piece = board[fr][fc]
+        color = piece[0]
+        num_label = f"{move_num}." if color == W else f"{move_num}..."
 
         # Castle via king moving two squares
         if piece[1] == "K" and abs(fc - tc) == 2:
@@ -688,6 +752,9 @@ def local_game():
             board = apply_castle(board, turn, side)
             castling[turn+"K"] = False; castling[turn+"Q"] = False
             last_move = [(fr,fc),(tr,tc)]; selected = None; valid = []
+            label = f"{num_label} {'O-O' if side=='k' else 'O-O-O'} ({'White' if color==W else 'Black'})"
+            if color == B: move_num += 1
+            snapshot(label)
             turn = B if turn == W else W
             if is_checkmate(board, turn, en_passant): return "checkmate"
             return None
@@ -712,6 +779,11 @@ def local_game():
             if board[row_k][7] != col+"R": castling[col+"K"] = False
             if board[row_k][0] != col+"R": castling[col+"Q"] = False
 
+        piece_name = {"P":"", "R":"R", "N":"N", "B":"B", "Q":"Q", "K":"K"}[piece[1]]
+        label = f"{num_label} {piece_name}{_sq_name(fr,fc)}→{_sq_name(tr,tc)} ({'White' if color==W else 'Black'})"
+        if color == B: move_num += 1
+        snapshot(label)
+
         selected = None; valid = []
         turn = B if turn == W else W
         if is_checkmate(board, turn, en_passant): return "checkmate"
@@ -727,6 +799,12 @@ def local_game():
 
         if raw == "resign":
             return loser_screen()
+
+        # History browser
+        if raw in ("<", ">", "b", "f", "back", "forward", "history", "hist"):
+            _browse_history(history, turn)
+            render_local(board, turn, selected, valid, last_move, msg=status())
+            continue
 
         # Castling shorthand
         if raw in ("o-o", "0-0"):

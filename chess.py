@@ -70,14 +70,14 @@ def _sq_bg(r, c, selected, valid_set, last_set):
 def _draw_board(board, rows, cols, selected, valid_set, last_set):
     """Print a big board (5-wide × 3-tall squares)."""
     SQ = 5
-    col_labels = "    " + "".join(
+    col_labels = "   " + "".join(
         BOLD + CYAN + chr(ord("a") + c).center(SQ) + RESET for c in cols
     )
     print(col_labels)
     for r in rows:
         rl = BOLD + CYAN + str(r + 1) + RESET
         top = "   "
-        mid = rl + " "
+        mid = rl + "  "
         for c in cols:
             bg    = _sq_bg(r, c, selected, valid_set, last_set)
             piece = board[r][c]
@@ -90,7 +90,7 @@ def _draw_board(board, rows, cols, selected, valid_set, last_set):
                 pad  = (SQ - 1) // 2  # 2 spaces each side for SQ=5
                 mid += bg + " " * pad + RESET + bg + fg + sym + RESET + bg + " " * pad + RESET
         top += "   "
-        mid += " " + rl
+        mid += "  " + rl
         print(top)
         print(mid)
         print(top)

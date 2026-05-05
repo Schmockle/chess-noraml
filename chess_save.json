@@ -1,0 +1,14 @@
+{
+  "gold": 600,
+  "wins": 1,
+  "losses": 0,
+  "draws": 0,
+  "owned_themes": [
+    "classic"
+  ],
+  "owned_skins": [
+    "standard"
+  ],
+  "active_theme": "classic",
+  "active_skin": "standard"
+}

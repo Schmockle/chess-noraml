@@ -7,7 +7,7 @@ Usage:
   py chess_ui.py join <ip> [port]
 """
 
-import sys, os, copy, math, threading, queue, socket, json
+import sys, os, copy, math, threading, queue, socket, json, random
 import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -53,6 +53,59 @@ ACC_COLORS = {
     "blunder":    (190,  40,  40),
 }
 
+BOARD_THEMES = {
+    "classic":  {"name": "Classic",  "price": 0,   "light": (42,  42,  42),  "dark": (22,  22,  22),  "sel": (200, 120,  0), "valid": (160,  90,  0), "last": ( 80,  55,  0), "desc": "Dark terminal"},
+    "forest":   {"name": "Forest",   "price": 150,  "light": (235, 236, 208), "dark": (115, 149, 82),  "sel": (220, 180, 50), "valid": (170, 130,  0), "last": ( 90,  70,  0), "desc": "Chess.com green"},
+    "ocean":    {"name": "Ocean",    "price": 300,  "light": (180, 210, 235), "dark": ( 60, 100, 160), "sel": (240, 160, 30), "valid": (190, 120,  0), "last": ( 80,  60,  0), "desc": "Deep blue sea"},
+    "midnight": {"name": "Midnight", "price": 450,  "light": ( 80,  60, 110), "dark": ( 35,  25,  55), "sel": (190, 100,  0), "valid": (150,  80,  0), "last": ( 70,  45,  0), "desc": "Dark purple"},
+    "fire":     {"name": "Fire",     "price": 600,  "light": (100,  45,  15), "dark": ( 45,  15,   5), "sel": (220,  70, 20), "valid": (180,  50, 10), "last": (120,  30,  5), "desc": "Burning hot"},
+    "ice":      {"name": "Ice",      "price": 800,  "light": (200, 225, 245), "dark": ( 90, 140, 200), "sel": (100, 180, 245), "valid": ( 70, 140, 200), "last": ( 50, 100, 160), "desc": "Frozen blue"},
+}
+
+PIECE_SKINS = {
+    "standard": {"name": "Standard", "price": 0,   "w": (245, 245, 245), "b": (190, 115,  35), "ws": (  0,   0,   0), "bs": ( 70,  30,  0), "desc": "Classic white & amber"},
+    "neon":     {"name": "Neon",     "price": 350,  "w": ( 80, 255, 120), "b": (255,  80, 220), "ws": (  0,  40,   0), "bs": ( 80,   0, 60), "desc": "Glowing neon"},
+    "royal":    {"name": "Royal",    "price": 450,  "w": (210, 190, 100), "b": (100, 140, 220), "ws": ( 50,  40,   0), "bs": ( 20,  30, 80), "desc": "Gold & silver"},
+    "ghost":    {"name": "Ghost",    "price": 550,  "w": (200, 205, 230), "b": ( 90, 100, 135), "ws": ( 20,  20,  40), "bs": ( 10,  10, 30), "desc": "Spectral pale"},
+    "inferno":  {"name": "Inferno",  "price": 750,  "w": (255, 210,  80), "b": (200,  50,  10), "ws": ( 80,  50,   0), "bs": ( 60,  10,  0), "desc": "Gold & ember"},
+}
+
+SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_save.json")
+
+
+def load_save():
+    default = {"gold": 500, "wins": 0, "losses": 0, "draws": 0,
+               "owned_themes": ["classic"], "owned_skins": ["standard"],
+               "active_theme": "classic", "active_skin": "standard"}
+    try:
+        with open(SAVE_PATH) as f:
+            d = json.load(f)
+        for k, v in default.items():
+            d.setdefault(k, v)
+        return d
+    except Exception:
+        return dict(default)
+
+
+def save_data(d):
+    try:
+        with open(SAVE_PATH, "w") as f:
+            json.dump(d, f, indent=2)
+    except Exception:
+        pass
+
+
+def apply_theme(save):
+    """Update module-level color globals from save data."""
+    t = BOARD_THEMES.get(save.get("active_theme", "classic"), BOARD_THEMES["classic"])
+    s = PIECE_SKINS.get(save.get("active_skin", "standard"), PIECE_SKINS["standard"])
+    global BG_LIGHT_SQ, BG_DARK_SQ, BG_SELECTED, BG_VALID, BG_LAST
+    BG_LIGHT_SQ = t["light"]; BG_DARK_SQ = t["dark"]
+    BG_SELECTED = t["sel"];   BG_VALID   = t["valid"]; BG_LAST = t["last"]
+    PIECE_FG[W]     = s["w"];  PIECE_FG[B]     = s["b"]
+    PIECE_SHADOW[W] = s["ws"]; PIECE_SHADOW[B] = s["bs"]
+
+
 PIECE_GLYPHS = {
     "wK": "♔", "wQ": "♕", "wR": "♖", "wB": "♗", "wN": "♘", "wP": "♙",
     "bK": "♚", "bQ": "♛", "bR": "♜", "bB": "♝", "bN": "♞", "bP": "♟",
@@ -62,11 +115,13 @@ PIECE_SHADOW = {W: (0, 0, 0),       B: (70,  30,  0)}
 
 FONTS   = {}
 screen  = None  # set in main
+_save   = None  # loaded on startup
 
 
 def init_fonts():
-    FONTS["piece"]    = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 52)
-    FONTS["piece_sm"] = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 24)
+    FONTS["piece"]      = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 52)
+    FONTS["piece_sm"]   = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 24)
+    FONTS["piece_hist"] = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 16)
     FONTS["sm"]       = pygame.font.SysFont("segoeui,arial", 14)
     FONTS["md"]       = pygame.font.SysFont("segoeui,arial", 18, bold=True)
     FONTS["lg"]       = pygame.font.SysFont("segoeui,arial", 24, bold=True)
@@ -312,7 +367,7 @@ def _update_castling(gs: GameState):
 
 # ── Move execution ─────────────────────────────────────────────────────────────
 
-def _record_and_advance(gs: GameState, tracker, fen_before, fen_after, label):
+def _record_and_advance(gs: GameState, tracker, fen_before, fen_after, label, piece=""):
     idx = len(gs.move_history)
     tracker.submit(idx, fen_before, fen_after, gs.turn)
     num_str = f"{gs.move_num}." if gs.turn == W else f"{gs.move_num}..."
@@ -323,6 +378,8 @@ def _record_and_advance(gs: GameState, tracker, fen_before, fen_after, label):
         "fen_after": fen_after,
         "color":     gs.turn,
         "idx":       idx,
+        "piece":     piece,
+        "capture":   "×" in label,
     })
     if gs.turn == B:
         gs.move_num += 1
@@ -358,17 +415,21 @@ def do_move(gs: GameState, fr, fc, tr, tc, tracker, conn=None, promo="Q"):
         label = "O-O" if side == "k" else "O-O-O"
         if conn: conn.send({"type": "castle", "side": side})
     else:
+        is_capture = gs.board[tr][tc] != EMPTY or (
+            piece[1] == "P" and fc != tc and gs.board[tr][tc] == EMPTY  # en passant
+        )
         gs.board, gs.en_passant = apply_move(gs.board, fr, fc, tr, tc, gs.en_passant, promo)
         gs.last_move = [(fr, fc), (tr, tc)]
         pname = {"P": "", "R": "R", "N": "N", "B": "B", "Q": "Q", "K": "K"}[piece[1]]
-        label = f"{pname}{_sq_name(fr,fc)}→{_sq_name(tr,tc)}"
+        sep   = "×" if is_capture else "→"
+        label = f"{pname}{_sq_name(fr,fc)}{sep}{_sq_name(tr,tc)}"
         if promo != "Q" and piece[1] == "P": label += f"={promo}"
         if conn: conn.send({"type":"move","from_r":fr,"from_c":fc,
                              "to_r":tr,"to_c":tc,"promotion":promo})
 
     _update_castling(gs)
     fen_after = board_to_fen(gs.board, gs.turn, gs.castling, gs.en_passant)
-    _record_and_advance(gs, tracker, fen_before, fen_after, label)
+    _record_and_advance(gs, tracker, fen_before, fen_after, label, piece=piece)
     return _check_end(gs)
 
 
@@ -408,14 +469,20 @@ def try_recv(conn):
 
 # ── Sidebar ────────────────────────────────────────────────────────────────────
 
-RESIGN_RECT = pygame.Rect(SIDEBAR_X, WINDOW_H - 50, 90, 30)
+RESIGN_RECT = pygame.Rect(SIDEBAR_X,        WINDOW_H - 50, 110, 30)
+DRAW_RECT   = pygame.Rect(SIDEBAR_X + 118,  WINDOW_H - 50, 110, 30)
+SHOP_BTN    = pygame.Rect(SIDEBAR_X + 236,  WINDOW_H - 50, 100, 30)
 
 def draw_sidebar(surf, gs: GameState, tracker, scroll: int) -> pygame.Rect | None:
     pygame.draw.rect(surf, BG_SIDEBAR, (SIDEBAR_X - 8, 0, SIDEBAR_W + 18, WINDOW_H))
 
     y = 14
     surf.blit(FONTS["xl"].render("CHESS", True, ORANGE),
-              (SIDEBAR_X, y)); y += 48
+              (SIDEBAR_X, y))
+    if _save is not None:
+        gs_lbl = FONTS["sm"].render(f"{_save['gold']}g", True, (220, 180, 50))
+        surf.blit(gs_lbl, (SIDEBAR_X + SIDEBAR_W - gs_lbl.get_width() - 5, 18))
+    y += 48
 
     # Material
     w_val = sum(PIECE_VALUES.get(p[1], 0) for row in gs.board for p in row
@@ -473,28 +540,54 @@ def draw_sidebar(surf, gs: GameState, tracker, scroll: int) -> pygame.Rect | Non
 
         for move, x_off in ((wm, 28), (bm, 155)):
             if move is None: continue
-            acc = tracker.get(move["idx"]) if tracker else None
-            txt_col = ACC_COLORS.get(acc["classification"], WHITE_TEXT if move["color"]==W else GREY_TEXT) if acc else (WHITE_TEXT if move["color"]==W else GREY_TEXT)
-            raw_lbl = move["label"].split(" ", 1)[1] if " " in move["label"] else move["label"]
-            ls = FONTS["sm"].render(raw_lbl, True, txt_col)
-            hist_buf.blit(ls, (x_off, hy + 4))
+            acc      = tracker.get(move["idx"]) if tracker else None
+            base_col = WHITE_TEXT if move["color"] == W else GREY_TEXT
+            txt_col  = ACC_COLORS.get(acc["classification"], base_col) if acc else base_col
+            raw_lbl  = move["label"].split(" ", 1)[1] if " " in move["label"] else move["label"]
+            is_cap   = move.get("capture", False)
+
+            # Piece glyph
+            cx = x_off
+            glyph = PIECE_GLYPHS.get(move.get("piece", ""), "")
+            if glyph:
+                g_col  = PIECE_FG.get(move["piece"][0], txt_col)
+                g_surf = FONTS["piece_hist"].render(glyph, True, g_col)
+                hist_buf.blit(g_surf, (cx, hy + 3))
+                cx += g_surf.get_width() + 1
+
+            # Move text — red tint on captures
+            lbl_col = (220, 80, 80) if is_cap else txt_col
+            ls = FONTS["sm"].render(raw_lbl, True, lbl_col)
+            hist_buf.blit(ls, (cx, hy + 4))
             if acc:
                 dot_c = ACC_COLORS.get(acc["classification"], GREY_TEXT)
-                pygame.draw.circle(hist_buf, dot_c, (x_off + ls.get_width() + 7, hy + ROW_H // 2), 4)
+                pygame.draw.circle(hist_buf, dot_c, (cx + ls.get_width() + 7, hy + ROW_H // 2), 4)
 
     surf.blit(hist_buf, (SIDEBAR_X, y)); y += HIST_H + 6
 
     pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
 
-    # Resign button
+    mouse = pygame.mouse.get_pos()
     if not gs.game_over:
-        btn   = RESIGN_RECT
-        mouse = pygame.mouse.get_pos()
-        hover = btn.collidepoint(mouse)
-        pygame.draw.rect(surf, ORANGE if hover else (55, 30, 0), btn, border_radius=5)
+        # Resign
+        hover = RESIGN_RECT.collidepoint(mouse)
+        pygame.draw.rect(surf, ORANGE if hover else (55, 30, 0), RESIGN_RECT, border_radius=5)
         rs = FONTS["sm"].render("Resign", True, (10,10,10) if hover else WHITE_TEXT)
-        surf.blit(rs, rs.get_rect(center=btn.center))
-        return btn
+        surf.blit(rs, rs.get_rect(center=RESIGN_RECT.center))
+        # Offer Draw
+        hover_d = DRAW_RECT.collidepoint(mouse)
+        pygame.draw.rect(surf, (20, 80, 80) if hover_d else (10, 45, 45), DRAW_RECT, border_radius=5)
+        ds = FONTS["sm"].render("Offer Draw", True, WHITE_TEXT)
+        surf.blit(ds, ds.get_rect(center=DRAW_RECT.center))
+
+    # Shop
+    hover_s = SHOP_BTN.collidepoint(mouse)
+    pygame.draw.rect(surf, (30, 80, 30) if hover_s else (15, 45, 15), SHOP_BTN, border_radius=5)
+    ss = FONTS["sm"].render("Shop", True, WHITE_TEXT)
+    surf.blit(ss, ss.get_rect(center=SHOP_BTN.center))
+
+    if not gs.game_over:
+        return RESIGN_RECT
     return None
 
 
@@ -586,13 +679,13 @@ def _review_nav_rects():
     back_r = pygame.Rect(BOARD_X + BOARD_PX // 2 - 55, ny, 110, 28)
     return prev_r, next_r, back_r
 
-def draw_review_nav(surf, view_idx, total, tracker):
+def draw_review_nav(surf, view_idx, total, tracker, back_label="Result"):
     prev_r, next_r, back_r = _review_nav_rects()
     mouse = pygame.mouse.get_pos()
     for rect, label, enabled in (
         (prev_r, "← Prev", view_idx > 0),
         (next_r, "Next →", view_idx < total - 1),
-        (back_r, "Result", True),
+        (back_r, back_label, True),
     ):
         col = ORANGE if rect.collidepoint(mouse) and enabled else ((55,30,0) if enabled else (30,20,0))
         pygame.draw.rect(surf, col, rect, border_radius=4)
@@ -603,16 +696,173 @@ def draw_review_nav(surf, view_idx, total, tracker):
     return prev_r, next_r, back_r
 
 
+# ── Shop overlay ───────────────────────────────────────────────────────────────
+
+def draw_shop(surf, save, tab, scroll_shop):
+    """Draw shop overlay. Returns (tab_rects, item_rects, close_rect, max_scroll)."""
+    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov.fill((0, 0, 0, 210)); surf.blit(ov, (0, 0))
+
+    panel = pygame.Rect(60, 30, WINDOW_W - 120, WINDOW_H - 60)
+    pygame.draw.rect(surf, BG_SIDEBAR, panel, border_radius=12)
+    pygame.draw.rect(surf, ORANGE,     panel, 2,  border_radius=12)
+
+    # Title & gold
+    surf.blit(FONTS["xl"].render("SHOP", True, ORANGE), (panel.x + 20, panel.y + 14))
+    gs_surf = FONTS["lg"].render(f"{save['gold']} gold", True, (220, 180, 50))
+    surf.blit(gs_surf, (panel.right - gs_surf.get_width() - 20, panel.y + 18))
+
+    # Stats row
+    st = f"Wins: {save['wins']}   Losses: {save['losses']}   Draws: {save['draws']}"
+    surf.blit(FONTS["sm"].render(st, True, GREY_TEXT), (panel.x + 20, panel.y + 58))
+
+    # Tabs
+    tab_rects = {}
+    tx = panel.x + 20
+    for key, label in (("boards", "Board Themes"), ("skins", "Piece Skins")):
+        r = pygame.Rect(tx, panel.y + 80, 150, 28)
+        active = (tab == key)
+        pygame.draw.rect(surf, ORANGE if active else (40, 40, 40), r, border_radius=5)
+        ls = FONTS["md"].render(label, True, (10, 10, 10) if active else WHITE_TEXT)
+        surf.blit(ls, ls.get_rect(center=r.center))
+        tab_rects[key] = r
+        tx += 162
+
+    # Content area
+    content_top = panel.y + 118
+    content_h   = panel.h - 126
+    IW, IH, IPAD = 210, 95, 10
+    cols = max(1, (panel.w - 40) // (IW + IPAD))
+
+    items      = BOARD_THEMES if tab == "boards" else PIECE_SKINS
+    active_key = save.get("active_theme" if tab == "boards" else "active_skin", "classic")
+    owned      = save.get("owned_themes" if tab == "boards" else "owned_skins", [])
+
+    clip = pygame.Surface((panel.w - 4, content_h), pygame.SRCALPHA)
+    clip.fill((0, 0, 0, 0))
+
+    item_rects = {}
+    for i, (key, item) in enumerate(items.items()):
+        col = i % cols
+        row = i // cols
+        ix  = col * (IW + IPAD)
+        iy  = row * (IH + IPAD) - scroll_shop
+        if iy + IH < 0 or iy > content_h:
+            continue
+
+        is_owned    = key in owned
+        is_equipped = key == active_key
+        border_col  = ORANGE if is_equipped else ((80, 80, 80) if is_owned else (40, 40, 40))
+
+        r = pygame.Rect(ix, iy, IW, IH)
+        pygame.draw.rect(clip, (28, 28, 28), r, border_radius=8)
+        pygame.draw.rect(clip, border_col,   r, 2, border_radius=8)
+
+        # Preview square (left side)
+        prev = pygame.Rect(ix + 6, iy + 6, 50, 50)
+        if tab == "boards":
+            sq = 25
+            for pr in range(2):
+                for pc in range(2):
+                    sc = item["light"] if (pr + pc) % 2 == 1 else item["dark"]
+                    pygame.draw.rect(clip, sc, (prev.x + pc * sq, prev.y + pr * sq, sq, sq))
+        else:
+            pygame.draw.rect(clip, (40, 40, 40), prev, border_radius=4)
+            gw = FONTS["piece_sm"].render("♛", True, item["b"])
+            gb = FONTS["piece_sm"].render("♕", True, item["w"])
+            clip.blit(gw, gw.get_rect(center=(prev.centerx - 9, prev.centery)))
+            clip.blit(gb, gb.get_rect(center=(prev.centerx + 9, prev.centery)))
+
+        # Text (right of preview)
+        clip.blit(FONTS["md"].render(item["name"], True, WHITE_TEXT), (ix + 62, iy + 8))
+        clip.blit(FONTS["sm"].render(item["desc"], True, GREY_TEXT),  (ix + 62, iy + 28))
+        if not is_owned:
+            clip.blit(FONTS["sm"].render(f"{item['price']} gold", True, (220, 180, 50)), (ix + 62, iy + 44))
+
+        # Action button
+        if is_equipped:
+            btn_label, btn_col = "EQUIPPED", (30, 70, 30)
+        elif is_owned:
+            btn_label, btn_col = "EQUIP",    (30, 50, 90)
+        else:
+            can_afford = save["gold"] >= item["price"]
+            btn_label  = f"BUY  {item['price']}g"
+            btn_col    = (55, 30, 0) if can_afford else (40, 20, 20)
+
+        btn = pygame.Rect(ix + 6, iy + IH - 26, IW - 12, 20)
+        pygame.draw.rect(clip, btn_col, btn, border_radius=4)
+        bs = FONTS["sm"].render(btn_label, True, WHITE_TEXT)
+        clip.blit(bs, bs.get_rect(center=btn.center))
+
+        # Map button to screen coords for click detection
+        item_rects[key] = pygame.Rect(panel.x + 2 + ix + btn.x,
+                                       content_top + iy + btn.y,
+                                       btn.w, btn.h)
+
+    surf.blit(clip, (panel.x + 2, content_top))
+
+    rows_total = (len(items) + cols - 1) // cols
+    max_scroll = max(0, rows_total * (IH + IPAD) - content_h + IH)
+
+    # Close button
+    close = pygame.Rect(panel.right - 38, panel.y + 10, 28, 28)
+    pygame.draw.rect(surf, ORANGE if close.collidepoint(pygame.mouse.get_pos()) else (60, 60, 60),
+                     close, border_radius=4)
+    xs = FONTS["md"].render("✕", True, WHITE_TEXT)
+    surf.blit(xs, xs.get_rect(center=close.center))
+
+    return tab_rects, item_rects, close, max_scroll
+
+
+# ── Draw-offer overlay ─────────────────────────────────────────────────────────
+
+def draw_draw_offer(surf, mode):
+    """Draw the draw-offer overlay. Returns (accept_rect, decline_rect) or (None, None)."""
+    ov_w, ov_h = 340, 130
+    ov = pygame.Rect(WINDOW_W // 2 - ov_w // 2, WINDOW_H // 2 - ov_h // 2, ov_w, ov_h)
+    pygame.draw.rect(surf, BG_SIDEBAR, ov, border_radius=10)
+    pygame.draw.rect(surf, ORANGE,     ov, 2, border_radius=10)
+    if mode == "sent":
+        s = FONTS["md"].render("Draw offer sent…", True, GREY_TEXT)
+        surf.blit(s, s.get_rect(center=ov.center))
+        return None, None
+    s = FONTS["md"].render("Opponent offers a draw", True, WHITE_TEXT)
+    surf.blit(s, s.get_rect(center=(ov.centerx, ov.y + 38)))
+    acc = pygame.Rect(ov.centerx - 100, ov.bottom - 46, 90, 30)
+    dec = pygame.Rect(ov.centerx + 10,  ov.bottom - 46, 90, 30)
+    for rect, label, base in ((acc, "Accept", (30, 100, 30)), (dec, "Decline", (120, 35, 35))):
+        hover = rect.collidepoint(pygame.mouse.get_pos())
+        col   = tuple(min(255, v + 50) for v in base) if hover else base
+        pygame.draw.rect(surf, col, rect, border_radius=5)
+        ls = FONTS["sm"].render(label, True, WHITE_TEXT)
+        surf.blit(ls, ls.get_rect(center=rect.center))
+    return acc, dec
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
-    clock       = pygame.time.Clock()
-    scroll      = 0
-    promo_rects = None
-    reviewing   = False   # True when browsing move history after game over
-    view_idx    = 0       # current position in move_history during review
-    loss_ticks  = None
-    loss_fired  = False
+def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None):
+    global _save
+    if save is None:
+        save = load_save()
+    _save = save
+    apply_theme(save)
+
+    clock           = pygame.time.Clock()
+    scroll          = 0
+    promo_rects     = None
+    reviewing       = False
+    view_idx        = 0
+    loss_ticks      = None
+    loss_fired      = False
+    shop_open       = False
+    shop_tab        = "boards"
+    scroll_shop     = 0
+    gold_awarded    = False
+    draw_offer_sent = False
+    draw_offer_recv = False
+    draw_msg        = ""
+    draw_msg_ticks  = 0
 
     while True:
         flip = (gs.turn == B) if conn is None else (my_color == B)
@@ -628,7 +878,17 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
                         gs.result    = "white_wins" if my_color == W else "black_wins"
                     elif data["type"] in ("move", "castle"):
                         apply_opponent_move(gs, data, tracker)
-                        scroll = max(0, len(gs.move_history) // 2 * 22 - 250)
+                        scroll    = max(0, len(gs.move_history) // 2 * 22 - 250)
+                        reviewing = False
+                    elif data["type"] == "draw_offer":
+                        draw_offer_recv = True
+                    elif data["type"] == "draw_accept":
+                        gs.game_over = True; gs.result = "draw"; gs.winner = None
+                        draw_offer_sent = False
+                    elif data["type"] == "draw_decline":
+                        draw_offer_sent = False
+                        draw_msg        = "Draw declined"
+                        draw_msg_ticks  = pygame.time.get_ticks()
             except ConnectionError:
                 gs.game_over = True; gs.result = "draw"
 
@@ -643,34 +903,95 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
                 return "quit"
 
             if event.type == pygame.MOUSEWHEEL:
-                scroll = max(0, scroll - event.y * 22)
+                if shop_open:
+                    scroll_shop = max(0, scroll_shop - event.y * 20)
+                else:
+                    scroll = max(0, scroll - event.y * 22)
 
             if event.type == pygame.KEYDOWN:
-                if reviewing:
-                    if event.key == pygame.K_LEFT  and view_idx > 0:
-                        view_idx -= 1
-                    elif event.key == pygame.K_RIGHT and view_idx < len(gs.move_history) - 1:
-                        view_idx += 1
-                    elif event.key == pygame.K_ESCAPE:
+                if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                    if gs.move_history:
+                        if not reviewing:
+                            reviewing = True
+                            view_idx  = len(gs.move_history) - 1
+                        if event.key == pygame.K_LEFT and view_idx > 0:
+                            view_idx -= 1
+                        elif event.key == pygame.K_RIGHT:
+                            if view_idx < len(gs.move_history) - 1:
+                                view_idx += 1
+                            elif not gs.game_over:
+                                reviewing = False
+                elif event.key == pygame.K_ESCAPE:
+                    if shop_open:
+                        shop_open = False
+                    elif reviewing:
                         reviewing = False
-                else:
-                    if event.key == pygame.K_ESCAPE:
+                    else:
                         gs.selected = None; gs.valid_moves = []
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my_pos = event.pos
 
+                # Draw offer incoming — intercept all clicks
+                if draw_offer_recv:
+                    acc_r, dec_r = draw_draw_offer(screen, "received")
+                    if acc_r and acc_r.collidepoint(mx, my_pos):
+                        draw_offer_recv = False
+                        gs.game_over = True; gs.result = "draw"; gs.winner = None
+                        try: conn.send({"type": "draw_accept"})
+                        except: pass
+                    elif dec_r and dec_r.collidepoint(mx, my_pos):
+                        draw_offer_recv = False
+                        try: conn.send({"type": "draw_decline"})
+                        except: pass
+                    continue
+
+                # Shop overlay — handle all clicks before anything else
+                if shop_open:
+                    tab_rects, item_rects, close_rect, _ = draw_shop(screen, save, shop_tab, scroll_shop)
+                    if close_rect.collidepoint(mx, my_pos):
+                        shop_open = False
+                    for key, trect in tab_rects.items():
+                        if trect.collidepoint(mx, my_pos):
+                            shop_tab = key; scroll_shop = 0
+                    for key, irect in item_rects.items():
+                        if irect.collidepoint(mx, my_pos):
+                            items_dict = BOARD_THEMES if shop_tab == "boards" else PIECE_SKINS
+                            owned_key  = "owned_themes" if shop_tab == "boards" else "owned_skins"
+                            act_key    = "active_theme" if shop_tab == "boards" else "active_skin"
+                            item       = items_dict[key]
+                            if key in save[owned_key]:
+                                save[act_key] = key
+                                apply_theme(save)
+                            elif save["gold"] >= item["price"]:
+                                save["gold"] -= item["price"]
+                                save[owned_key].append(key)
+                                save[act_key] = key
+                                apply_theme(save)
+                            save_data(save)
+                            _save = save
+                    continue
+
+                # Shop button
+                if SHOP_BTN.collidepoint(mx, my_pos):
+                    shop_open = True; scroll_shop = 0
+                    continue
+
                 # Review nav bar
                 if reviewing:
-                    total = len(gs.move_history)
+                    total    = len(gs.move_history)
                     prev_r, next_r, back_r = _review_nav_rects()
+                    on_board = pixel_to_square(mx, my_pos, flip) is not None
                     if prev_r.collidepoint(mx, my_pos) and view_idx > 0:
-                        view_idx -= 1
+                        view_idx -= 1; continue
                     elif next_r.collidepoint(mx, my_pos) and view_idx < total - 1:
-                        view_idx += 1
-                    elif back_r.collidepoint(mx, my_pos):
+                        view_idx += 1; continue
+                    elif back_r.collidepoint(mx, my_pos) or (not gs.game_over and on_board):
                         reviewing = False
-                    continue
+                        if gs.game_over: continue
+                        # live game: fall through to board click handler
+                    else:
+                        continue
 
                 # Promotion overlay
                 if promo_rects:
@@ -693,6 +1014,16 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
                         tracker.stop(); return "again"
                     elif qt.collidepoint(mx, my_pos):
                         tracker.stop(); return "quit"
+                    continue
+
+                # Draw offer button
+                if DRAW_RECT.collidepoint(mx, my_pos) and not gs.game_over:
+                    if conn is None:
+                        gs.game_over = True; gs.result = "draw"; gs.winner = None
+                    elif not draw_offer_sent:
+                        draw_offer_sent = True
+                        try: conn.send({"type": "draw_offer"})
+                        except: pass
                     continue
 
                 # Resign button
@@ -741,6 +1072,25 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
                     else:
                         gs.selected = None; gs.valid_moves = []
 
+        # Award gold once per game
+        if gs.game_over and not gold_awarded:
+            gold_awarded = True
+            if conn is None:
+                if gs.result == "draw":
+                    save["draws"] += 1; save["gold"] += 50
+                else:
+                    save["wins"] += 1; save["gold"] += 100
+            else:
+                winner_col = W if gs.result == "white_wins" else (B if gs.result == "black_wins" else None)
+                if winner_col == my_color:
+                    save["wins"] += 1; save["gold"] += 100
+                elif winner_col is None:
+                    save["draws"] += 1; save["gold"] += 50
+                else:
+                    save["losses"] += 1; save["gold"] += 25
+            save_data(save)
+            _save = save
+
         # Draw
         screen.fill(BG_APP)
 
@@ -749,10 +1099,9 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
             draw_board(screen, gs, flip,
                        board_override=snap["board"],
                        last_move_override=snap["last_move"])
-            draw_review_nav(screen, view_idx, len(gs.move_history), tracker)
-            # Show move label + accuracy in sidebar area
+            back_lbl = "Result" if gs.game_over else "Present"
+            draw_review_nav(screen, view_idx, len(gs.move_history), tracker, back_label=back_lbl)
             draw_sidebar(screen, gs, tracker, scroll)
-            # Highlight current move in history by scrolling to it
             scroll = max(0, (view_idx // 2) * 22 - 120)
         else:
             draw_board(screen, gs, flip)
@@ -764,6 +1113,22 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
 
         if gs.game_over and not reviewing:
             draw_game_over(screen, gs, tracker)
+
+        if draw_offer_recv:
+            draw_draw_offer(screen, "received")
+        elif draw_offer_sent:
+            draw_draw_offer(screen, "sent")
+
+        if draw_msg:
+            if pygame.time.get_ticks() - draw_msg_ticks < 3000:
+                ms = FONTS["md"].render(draw_msg, True, RED_TEXT)
+                screen.blit(ms, ms.get_rect(center=(WINDOW_W // 2, WINDOW_H - 90)))
+            else:
+                draw_msg = ""
+
+        if shop_open:
+            _, _, _, max_scroll_shop = draw_shop(screen, save, shop_tab, scroll_shop)
+            scroll_shop = min(scroll_shop, max_scroll_shop)
 
         lost_game = gs.game_over and gs.winner is not None and (
             conn is None or (my_color is not None and gs.winner != my_color)
@@ -792,15 +1157,21 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
 # ── Entry points ───────────────────────────────────────────────────────────────
 
 def run_local():
+    global _save
+    _save = load_save()
+    apply_theme(_save)
     while True:
         gs      = GameState()
         tracker = AccuracyTracker(StockfishAnalyzer())
-        result  = _pygame_loop(gs, tracker)
+        result  = _pygame_loop(gs, tracker, save=_save)
         tracker.stop()
         if result != "again": break
 
 
 def run_host(port):
+    global _save
+    _save = load_save()
+    apply_theme(_save)
     try:
         s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
@@ -813,15 +1184,21 @@ def run_host(port):
     print("Waiting for opponent…")
     client_sock, addr = srv.accept(); srv.close()
     print(f"Opponent connected from {addr[0]}!")
-    conn    = Connection(client_sock)
-    conn.send({"type": "color", "color": B})
+    conn      = Connection(client_sock)
+    my_color  = random.choice([W, B])
+    opp_color = B if my_color == W else W
+    conn.send({"type": "color", "color": opp_color})
+    print(f"You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
-    _pygame_loop(gs, tracker, conn=conn, my_color=W)
+    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save)
     tracker.stop(); conn.close()
 
 
 def run_join(host_ip, port):
+    global _save
+    _save = load_save()
+    apply_theme(_save)
     sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
     sock.connect((host_ip, port))
     conn     = Connection(sock)
@@ -829,7 +1206,7 @@ def run_join(host_ip, port):
     print(f"Connected! You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
-    _pygame_loop(gs, tracker, conn=conn, my_color=my_color)
+    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save)
     tracker.stop(); conn.close()
 
 

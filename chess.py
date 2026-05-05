@@ -61,7 +61,7 @@ def clear():
     os.system("cls" if os.name == "nt" else "clear")
 
 def _sq_bg(r, c, selected, valid_set, last_set):
-    is_light = (r + c) % 2 == 0
+    is_light = (r + c) % 2 == 1
     if selected and (r, c) == selected: return BG_SEL
     if (r, c) in valid_set:             return BG_MOVE
     if (r, c) in last_set:              return BG_SEL

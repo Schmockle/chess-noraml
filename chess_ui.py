@@ -261,7 +261,7 @@ def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_o
     for r in range(8):
         for c in range(8):
             rect     = sq_rect(r, c, flip)
-            is_light = (r + c) % 2 == 0
+            is_light = (r + c) % 2 == 1
             sq       = (r, c)
 
             if not reviewing and gs.selected and sq == gs.selected:

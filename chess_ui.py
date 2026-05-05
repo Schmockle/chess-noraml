@@ -54,27 +54,27 @@ ACC_COLORS = {
 }
 
 BOARD_THEMES = {
-    "classic":  {"name": "Classic",  "price": 0,   "light": (42,  42,  42),  "dark": (22,  22,  22),  "sel": (200, 120,  0), "valid": (160,  90,  0), "last": ( 80,  55,  0), "desc": "Dark terminal"},
-    "forest":   {"name": "Forest",   "price": 150,  "light": (235, 236, 208), "dark": (115, 149, 82),  "sel": (220, 180, 50), "valid": (170, 130,  0), "last": ( 90,  70,  0), "desc": "Chess.com green"},
-    "ocean":    {"name": "Ocean",    "price": 300,  "light": (180, 210, 235), "dark": ( 60, 100, 160), "sel": (240, 160, 30), "valid": (190, 120,  0), "last": ( 80,  60,  0), "desc": "Deep blue sea"},
-    "midnight": {"name": "Midnight", "price": 450,  "light": ( 80,  60, 110), "dark": ( 35,  25,  55), "sel": (190, 100,  0), "valid": (150,  80,  0), "last": ( 70,  45,  0), "desc": "Dark purple"},
-    "fire":     {"name": "Fire",     "price": 600,  "light": (100,  45,  15), "dark": ( 45,  15,   5), "sel": (220,  70, 20), "valid": (180,  50, 10), "last": (120,  30,  5), "desc": "Burning hot"},
-    "ice":      {"name": "Ice",      "price": 800,  "light": (200, 225, 245), "dark": ( 90, 140, 200), "sel": (100, 180, 245), "valid": ( 70, 140, 200), "last": ( 50, 100, 160), "desc": "Frozen blue"},
+    "classic":  {"name": "Classic",  "price":   0, "light": (42,  42,  42),  "dark": (22,  22,  22),  "sel": (200, 120,  0), "valid": (160,  90,  0), "last": ( 80,  55,  0), "desc": "Dark terminal"},
+    "forest":   {"name": "Forest",   "price":  40, "light": (235, 236, 208), "dark": (115, 149, 82),  "sel": (220, 180, 50), "valid": (170, 130,  0), "last": ( 90,  70,  0), "desc": "Chess.com green"},
+    "ocean":    {"name": "Ocean",    "price":  80, "light": (180, 210, 235), "dark": ( 60, 100, 160), "sel": (240, 160, 30), "valid": (190, 120,  0), "last": ( 80,  60,  0), "desc": "Deep blue sea"},
+    "midnight": {"name": "Midnight", "price": 120, "light": ( 80,  60, 110), "dark": ( 35,  25,  55), "sel": (190, 100,  0), "valid": (150,  80,  0), "last": ( 70,  45,  0), "desc": "Dark purple"},
+    "fire":     {"name": "Fire",     "price": 160, "light": (100,  45,  15), "dark": ( 45,  15,   5), "sel": (220,  70, 20), "valid": (180,  50, 10), "last": (120,  30,  5), "desc": "Burning hot"},
+    "ice":      {"name": "Ice",      "price": 200, "light": (200, 225, 245), "dark": ( 90, 140, 200), "sel": (100, 180, 245), "valid": ( 70, 140, 200), "last": ( 50, 100, 160), "desc": "Frozen blue"},
 }
 
 PIECE_SKINS = {
-    "standard": {"name": "Standard", "price": 0,   "w": (245, 245, 245), "b": (190, 115,  35), "ws": (  0,   0,   0), "bs": ( 70,  30,  0), "desc": "Classic white & amber"},
-    "neon":     {"name": "Neon",     "price": 350,  "w": ( 80, 255, 120), "b": (255,  80, 220), "ws": (  0,  40,   0), "bs": ( 80,   0, 60), "desc": "Glowing neon"},
-    "royal":    {"name": "Royal",    "price": 450,  "w": (210, 190, 100), "b": (100, 140, 220), "ws": ( 50,  40,   0), "bs": ( 20,  30, 80), "desc": "Gold & silver"},
-    "ghost":    {"name": "Ghost",    "price": 550,  "w": (200, 205, 230), "b": ( 90, 100, 135), "ws": ( 20,  20,  40), "bs": ( 10,  10, 30), "desc": "Spectral pale"},
-    "inferno":  {"name": "Inferno",  "price": 750,  "w": (255, 210,  80), "b": (200,  50,  10), "ws": ( 80,  50,   0), "bs": ( 60,  10,  0), "desc": "Gold & ember"},
+    "standard": {"name": "Standard", "price":   0, "w": (245, 245, 245), "b": (190, 115,  35), "ws": (  0,   0,   0), "bs": ( 70,  30,  0), "desc": "Classic white & amber"},
+    "neon":     {"name": "Neon",     "price":  80, "w": ( 80, 255, 120), "b": (255,  80, 220), "ws": (  0,  40,   0), "bs": ( 80,   0, 60), "desc": "Glowing neon"},
+    "royal":    {"name": "Royal",    "price": 120, "w": (210, 190, 100), "b": (100, 140, 220), "ws": ( 50,  40,   0), "bs": ( 20,  30, 80), "desc": "Gold & silver"},
+    "ghost":    {"name": "Ghost",    "price": 160, "w": (200, 205, 230), "b": ( 90, 100, 135), "ws": ( 20,  20,  40), "bs": ( 10,  10, 30), "desc": "Spectral pale"},
+    "inferno":  {"name": "Inferno",  "price": 200, "w": (255, 210,  80), "b": (200,  50,  10), "ws": ( 80,  50,   0), "bs": ( 60,  10,  0), "desc": "Gold & ember"},
 }
 
 SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_save.json")
 
 
 def load_save():
-    default = {"gold": 500, "wins": 0, "losses": 0, "draws": 0,
+    default = {"gold": 50, "wins": 0, "losses": 0, "draws": 0,
                "owned_themes": ["classic"], "owned_skins": ["standard"],
                "active_theme": "classic", "active_skin": "standard"}
     try:
@@ -289,11 +289,11 @@ def pixel_to_square(px, py, flip):
 
 # ── Piece drawing ──────────────────────────────────────────────────────────────
 
-def draw_piece(surf, piece_str, rect):
+def draw_piece(surf, piece_str, rect, fg=None, shadow_col=None):
     glyph = PIECE_GLYPHS.get(piece_str)
     if not glyph: return
-    fg         = PIECE_FG[piece_str[0]]
-    shadow_col = PIECE_SHADOW[piece_str[0]]
+    if fg is None:         fg         = PIECE_FG[piece_str[0]]
+    if shadow_col is None: shadow_col = PIECE_SHADOW[piece_str[0]]
     for dx, dy in ((-1, 0), (1, 0), (0, -1), (0, 1)):
         s = FONTS["piece"].render(glyph, True, shadow_col)
         surf.blit(s, s.get_rect(center=(rect.centerx + dx, rect.centery + dy)))
@@ -303,10 +303,12 @@ def draw_piece(surf, piece_str, rect):
 
 # ── Board drawing ──────────────────────────────────────────────────────────────
 
-def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_override=None):
+def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_override=None,
+               my_theme_data=None, opp_theme_data=None, my_skin_data=None, opp_skin_data=None):
     board     = board_override if board_override is not None else gs.board
     last_move = last_move_override if last_move_override is not None else gs.last_move
     reviewing = board_override is not None
+    split     = my_theme_data is not None and opp_theme_data is not None
 
     valid_set = set() if reviewing else set(gs.valid_moves)
     last_set  = set(map(tuple, last_move)) if last_move else set()
@@ -315,9 +317,17 @@ def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_o
 
     for r in range(8):
         for c in range(8):
-            rect     = sq_rect(r, c, flip)
-            is_light = (r + c) % 2 == 1
-            sq       = (r, c)
+            rect       = sq_rect(r, c, flip)
+            is_light   = (r + c) % 2 == 1
+            sq         = (r, c)
+            dr         = r if flip else (7 - r)   # screen row: 0=top 7=bottom
+            is_my_half = dr >= 4
+
+            if split:
+                td   = my_theme_data if is_my_half else opp_theme_data
+                base = td["light"] if is_light else td["dark"]
+            else:
+                base = BG_LIGHT_SQ if is_light else BG_DARK_SQ
 
             if not reviewing and gs.selected and sq == gs.selected:
                 col = BG_SELECTED
@@ -326,7 +336,7 @@ def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_o
             elif in_chk and sq == king_sq:
                 col = BG_CHECK
             else:
-                col = BG_LIGHT_SQ if is_light else BG_DARK_SQ
+                col = base
             pygame.draw.rect(surf, col, rect)
 
             if sq in valid_set:
@@ -337,7 +347,17 @@ def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_o
 
             p = board[r][c]
             if p != EMPTY:
-                draw_piece(surf, p, rect)
+                if split and my_skin_data and opp_skin_data:
+                    sd  = my_skin_data if is_my_half else opp_skin_data
+                    fg  = sd["w"] if p[0] == W else sd["b"]
+                    shd = sd["ws"] if p[0] == W else sd["bs"]
+                    draw_piece(surf, p, rect, fg=fg, shadow_col=shd)
+                else:
+                    draw_piece(surf, p, rect)
+
+    if split:
+        dy = BOARD_Y + 4 * SQ
+        pygame.draw.line(surf, (70, 70, 70), (BOARD_X, dy), (BOARD_X + BOARD_PX, dy), 2)
 
     # Coordinate labels — file letters across the bottom, rank numbers down the left
     for dc in range(8):
@@ -795,8 +815,8 @@ def draw_shop(surf, save, tab, scroll_shop):
         clip.blit(bs, bs.get_rect(center=btn.center))
 
         # Map button to screen coords for click detection
-        item_rects[key] = pygame.Rect(panel.x + 2 + ix + btn.x,
-                                       content_top + iy + btn.y,
+        item_rects[key] = pygame.Rect(panel.x + 2 + btn.x,
+                                       content_top + btn.y,
                                        btn.w, btn.h)
 
     surf.blit(clip, (panel.x + 2, content_top))
@@ -841,7 +861,8 @@ def draw_draw_offer(surf, mode):
 
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
-def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None):
+def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
+                 opp_theme_data=None, opp_skin_data=None):
     global _save
     if save is None:
         save = load_save()
@@ -1077,17 +1098,17 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None):
             gold_awarded = True
             if conn is None:
                 if gs.result == "draw":
-                    save["draws"] += 1; save["gold"] += 50
+                    save["draws"] += 1; save["gold"] += 3
                 else:
-                    save["wins"] += 1; save["gold"] += 100
+                    save["wins"] += 1; save["gold"] += 8
             else:
                 winner_col = W if gs.result == "white_wins" else (B if gs.result == "black_wins" else None)
                 if winner_col == my_color:
-                    save["wins"] += 1; save["gold"] += 100
+                    save["wins"] += 1; save["gold"] += 8
                 elif winner_col is None:
-                    save["draws"] += 1; save["gold"] += 50
+                    save["draws"] += 1; save["gold"] += 3
                 else:
-                    save["losses"] += 1; save["gold"] += 25
+                    save["losses"] += 1; save["gold"] += 1
             save_data(save)
             _save = save
 

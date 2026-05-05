@@ -1,14 +1,17 @@
 {
-  "gold": 600,
-  "wins": 1,
+  "gold": 294,
+  "wins": 2,
   "losses": 0,
-  "draws": 0,
+  "draws": 2,
   "owned_themes": [
-    "classic"
+    "classic",
+    "forest",
+    "ocean"
   ],
   "owned_skins": [
-    "standard"
+    "standard",
+    "inferno"
   ],
-  "active_theme": "classic",
+  "active_theme": "forest",
   "active_skin": "standard"
 }

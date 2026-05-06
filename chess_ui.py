@@ -7,7 +7,10 @@ Usage:
   py chess_ui.py join <ip> [port]
 """
 
-import sys, os, copy, math, threading, queue, socket, json, random
+import sys, os, copy, math, threading, queue, socket, json, random, hashlib
+
+# ── Admin auth (hardcoded — do not modify) ─────────────────────────────────────
+ADMIN_HASH = hashlib.sha256(bytes([83,99,104,109,48,99,107,108,101,33])).hexdigest()
 import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -492,8 +495,9 @@ def try_recv(conn):
 RESIGN_RECT = pygame.Rect(SIDEBAR_X,        WINDOW_H - 50, 110, 30)
 DRAW_RECT   = pygame.Rect(SIDEBAR_X + 118,  WINDOW_H - 50, 110, 30)
 SHOP_BTN    = pygame.Rect(SIDEBAR_X + 236,  WINDOW_H - 50, 100, 30)
+FLIP_BTN    = pygame.Rect(SIDEBAR_X,        WINDOW_H - 90, 330, 30)
 
-def draw_sidebar(surf, gs: GameState, tracker, scroll: int) -> pygame.Rect | None:
+def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = False) -> pygame.Rect | None:
     pygame.draw.rect(surf, BG_SIDEBAR, (SIDEBAR_X - 8, 0, SIDEBAR_W + 18, WINDOW_H))
 
     y = 14
@@ -588,6 +592,14 @@ def draw_sidebar(surf, gs: GameState, tracker, scroll: int) -> pygame.Rect | Non
     pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
 
     mouse = pygame.mouse.get_pos()
+
+    # Flip Board button
+    hover_f = FLIP_BTN.collidepoint(mouse)
+    flip_col = (50, 90, 140) if flip_manual else ((25, 60, 100) if hover_f else (15, 35, 60))
+    pygame.draw.rect(surf, flip_col, FLIP_BTN, border_radius=5)
+    fs = FONTS["sm"].render("⇅  Flip Board", True, WHITE_TEXT)
+    surf.blit(fs, fs.get_rect(center=FLIP_BTN.center))
+
     if not gs.game_over:
         # Resign
         hover = RESIGN_RECT.collidepoint(mouse)
@@ -834,6 +846,34 @@ def draw_shop(surf, save, tab, scroll_shop):
     return tab_rects, item_rects, close, max_scroll
 
 
+# ── Admin overlay ──────────────────────────────────────────────────────────────
+
+def draw_admin_overlay(surf, text, error=""):
+    ov_w, ov_h = 390, 158
+    ov = pygame.Rect(WINDOW_W // 2 - ov_w // 2, WINDOW_H // 2 - ov_h // 2, ov_w, ov_h)
+    pygame.draw.rect(surf, BG_SIDEBAR, ov, border_radius=10)
+    pygame.draw.rect(surf, (180, 20, 20), ov, 2, border_radius=10)
+
+    ts = FONTS["md"].render("⚡ Admin", True, (255, 160, 160))
+    surf.blit(ts, ts.get_rect(center=(ov.centerx, ov.y + 22)))
+
+    inp = pygame.Rect(ov.x + 20, ov.y + 50, ov_w - 40, 34)
+    pygame.draw.rect(surf, (22, 22, 22), inp, border_radius=5)
+    pygame.draw.rect(surf, (200, 40, 40) if error else (110, 20, 20), inp, 1, border_radius=5)
+    masked = FONTS["md"].render("●" * len(text) + "▌", True, WHITE_TEXT)
+    surf.blit(masked, masked.get_rect(midleft=(inp.x + 10, inp.centery)))
+
+    if error:
+        es = FONTS["sm"].render(error, True, RED_TEXT)
+        surf.blit(es, es.get_rect(center=(ov.centerx, ov.y + 104)))
+    else:
+        hs = FONTS["sm"].render("Enter your secret code", True, GREY_TEXT)
+        surf.blit(hs, hs.get_rect(center=(ov.centerx, ov.y + 104)))
+
+    sub = FONTS["sm"].render("Enter ↵  confirm      Esc  cancel", True, (55, 55, 55))
+    surf.blit(sub, sub.get_rect(center=(ov.centerx, ov.y + 133)))
+
+
 # ── Draw-offer overlay ─────────────────────────────────────────────────────────
 
 def draw_draw_offer(surf, mode):
@@ -880,13 +920,18 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
     shop_tab        = "boards"
     scroll_shop     = 0
     gold_awarded    = False
-    draw_offer_sent = False
-    draw_offer_recv = False
-    draw_msg        = ""
-    draw_msg_ticks  = 0
+    draw_offer_sent    = False
+    draw_offer_recv    = False
+    draw_msg           = ""
+    draw_msg_ticks     = 0
+    flip_manual        = False
+    admin_overlay_open = False
+    admin_input_text   = ""
+    admin_input_error  = ""
 
     while True:
-        flip = (gs.turn == B) if conn is None else (my_color == B)
+        # local: manual flip button; network: locked to your color, button toggles perspective
+        flip = flip_manual if conn is None else ((my_color == B) != flip_manual)
 
         # Network: poll for opponent's move
         if conn and not gs.game_over and gs.turn != my_color:
@@ -930,6 +975,39 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                     scroll = max(0, scroll - event.y * 22)
 
             if event.type == pygame.KEYDOWN:
+                if admin_overlay_open:
+                    if event.key == pygame.K_ESCAPE:
+                        admin_overlay_open = False
+                        admin_input_text   = ""
+                        admin_input_error  = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        admin_input_text  = admin_input_text[:-1]
+                        admin_input_error = ""
+                    elif event.key == pygame.K_RETURN and admin_input_text:
+                        if hashlib.sha256(admin_input_text.encode()).hexdigest() == ADMIN_HASH:
+                            admin_overlay_open = False
+                            admin_input_text   = ""
+                            admin_input_error  = ""
+                            winner       = W if (my_color is None or my_color == W) else B
+                            gs.game_over = True
+                            gs.winner    = winner
+                            gs.result    = "white_wins" if winner == W else "black_wins"
+                        else:
+                            admin_input_error = "Access denied."
+                            admin_input_text  = ""
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable():
+                            admin_input_text  += ch
+                            admin_input_error  = ""
+                    continue
+
+                if event.key == pygame.K_F12 and not gs.game_over:
+                    admin_overlay_open = True
+                    admin_input_text   = ""
+                    admin_input_error  = ""
+                    continue
+
                 if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
                     if gs.move_history:
                         if not reviewing:
@@ -952,6 +1030,10 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
 
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx, my_pos = event.pos
+
+                # Admin overlay — intercept all clicks while open
+                if admin_overlay_open:
+                    continue
 
                 # Draw offer incoming — intercept all clicks
                 if draw_offer_recv:
@@ -1035,6 +1117,11 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         tracker.stop(); return "again"
                     elif qt.collidepoint(mx, my_pos):
                         tracker.stop(); return "quit"
+                    continue
+
+                # Flip Board button
+                if FLIP_BTN.collidepoint(mx, my_pos):
+                    flip_manual = not flip_manual
                     continue
 
                 # Draw offer button
@@ -1122,11 +1209,11 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                        last_move_override=snap["last_move"])
             back_lbl = "Result" if gs.game_over else "Present"
             draw_review_nav(screen, view_idx, len(gs.move_history), tracker, back_label=back_lbl)
-            draw_sidebar(screen, gs, tracker, scroll)
+            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual)
             scroll = max(0, (view_idx // 2) * 22 - 120)
         else:
             draw_board(screen, gs, flip)
-            draw_sidebar(screen, gs, tracker, scroll)
+            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual)
 
         if gs.promotion_pending:
             color = gs.turn if conn is None else my_color
@@ -1139,6 +1226,9 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
             draw_draw_offer(screen, "received")
         elif draw_offer_sent:
             draw_draw_offer(screen, "sent")
+
+        if admin_overlay_open:
+            draw_admin_overlay(screen, admin_input_text, admin_input_error)
 
         if draw_msg:
             if pygame.time.get_ticks() - draw_msg_ticks < 3000:

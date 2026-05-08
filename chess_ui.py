@@ -75,6 +75,10 @@ PIECE_SKINS = {
 
 SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_save.json")
 
+# ── Relay server (fill in after deploying relay.py) ────────────────────────────
+RELAY_HOST = "turntable.proxy.rlwy.net"
+RELAY_PORT = 39077
+
 
 def load_save():
     default = {"gold": 50, "wins": 0, "losses": 0, "draws": 0,
@@ -1305,30 +1309,84 @@ def run_local():
         if result != "again": break
 
 
+def _theme_handshake_host(conn):
+    """Send our theme, receive opponent's. Returns (opp_theme_data, opp_skin_data)."""
+    conn.send({"type": "theme_info",
+               "theme": _save.get("active_theme", "classic"),
+               "skin":  _save.get("active_skin",  "standard")})
+    opp = conn.recv()
+    return (BOARD_THEMES.get(opp.get("theme", "classic"), BOARD_THEMES["classic"]),
+            PIECE_SKINS.get(opp.get("skin",  "standard"), PIECE_SKINS["standard"]))
+
+
+def _theme_handshake_join(conn):
+    """Receive host's theme, send ours. Returns (opp_theme_data, opp_skin_data)."""
+    opp = conn.recv()
+    conn.send({"type": "theme_info",
+               "theme": _save.get("active_theme", "classic"),
+               "skin":  _save.get("active_skin",  "standard")})
+    return (BOARD_THEMES.get(opp.get("theme", "classic"), BOARD_THEMES["classic"]),
+            PIECE_SKINS.get(opp.get("skin",  "standard"), PIECE_SKINS["standard"]))
+
+
+def _readline_sock(sock):
+    """Read one newline-terminated JSON line from a raw socket during handshake."""
+    buf = b""
+    while b"\n" not in buf:
+        chunk = sock.recv(4096)
+        if not chunk:
+            raise ConnectionError("disconnected")
+        buf += chunk
+    line, rest = buf.split(b"\n", 1)
+    return json.loads(line), rest
+
+
 def run_host(port):
     global _save
     _save = load_save()
     apply_theme(_save)
-    try:
-        s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
-    except: ip = "127.0.0.1"
-    print(f"Hosting on port {port}  |  Your IP: {ip}")
-    print(f"Opponent runs:  py chess_ui.py join {ip} {port}\n")
-    srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-    srv.bind(("0.0.0.0", port)); srv.listen(1)
-    print("Waiting for opponent…")
-    client_sock, addr = srv.accept(); srv.close()
-    print(f"Opponent connected from {addr[0]}!")
-    conn      = Connection(client_sock)
+
+    if RELAY_HOST:
+        print("Connecting to relay…")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((RELAY_HOST, RELAY_PORT))
+        sock.sendall(json.dumps({"action": "host"}).encode() + b"\n")
+        resp, buf = _readline_sock(sock)
+        code = resp["code"]
+        print(f"\n  ┌──────────────────────────────┐")
+        print(f"  │  Room code:   {code}            │")
+        print(f"  │  Opponent:  py chess_ui.py join {code}  │")
+        print(f"  └──────────────────────────────┘\n")
+        print("Waiting for opponent…")
+        # Wait for relay's {"joined": true} — may already be in buf
+        conn     = Connection(sock)
+        conn.buf = buf
+        conn.recv()   # blocks until joiner arrives
+        print("Opponent connected!")
+    else:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
+        except: ip = "127.0.0.1"
+        print(f"Hosting on port {port}  |  Your IP: {ip}")
+        print(f"Opponent runs:  py chess_ui.py join {ip} {port}\n")
+        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        srv.bind(("0.0.0.0", port)); srv.listen(1)
+        print("Waiting for opponent…")
+        client_sock, addr = srv.accept(); srv.close()
+        print(f"Opponent connected from {addr[0]}!")
+        conn = Connection(client_sock)
+
     my_color  = random.choice([W, B])
     opp_color = B if my_color == W else W
     conn.send({"type": "color", "color": opp_color})
+    opp_theme_data, opp_skin_data = _theme_handshake_host(conn)
     print(f"You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
-    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save)
+    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
+                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data)
     tracker.stop(); conn.close()
 
 
@@ -1336,14 +1394,33 @@ def run_join(host_ip, port):
     global _save
     _save = load_save()
     apply_theme(_save)
-    sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-    sock.connect((host_ip, port))
-    conn     = Connection(sock)
+
+    # 4-digit code → relay mode
+    if RELAY_HOST and host_ip.isdigit() and len(host_ip) <= 4:
+        code = host_ip.zfill(4)
+        print(f"Connecting to relay (room {code})…")
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((RELAY_HOST, RELAY_PORT))
+        sock.sendall(json.dumps({"action": "join", "code": code}).encode() + b"\n")
+        resp, buf = _readline_sock(sock)
+        if "error" in resp:
+            print(f"Error: {resp['error']}")
+            return
+        print("Connected to host!")
+        conn     = Connection(sock)
+        conn.buf = buf
+    else:
+        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        sock.connect((host_ip, port))
+        conn = Connection(sock)
+
     my_color = conn.recv()["color"]
+    opp_theme_data, opp_skin_data = _theme_handshake_join(conn)
     print(f"Connected! You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
-    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save)
+    _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
+                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data)
     tracker.stop(); conn.close()
 
 
@@ -1355,17 +1432,21 @@ if __name__ == "__main__":
 
     args = sys.argv[1:]
     if not args or args[0] in ("-h", "--help"):
-        print("Usage: py chess_ui.py  local | host [port] | join <ip> [port]")
+        print("Usage: py chess_ui.py  local")
+        print("       py chess_ui.py  host             (relay — needs RELAY_HOST set)")
+        print("       py chess_ui.py  join <4-digit>   (relay — needs RELAY_HOST set)")
+        print("       py chess_ui.py  host [port]      (direct LAN)")
+        print("       py chess_ui.py  join <ip> [port] (direct LAN)")
         sys.exit(0)
 
     cmd = args[0].lower()
     if cmd == "local":
         run_local()
     elif cmd == "host":
-        run_host(int(args[1]) if len(args) > 1 else DEFAULT_PORT)
+        run_host(int(args[1]) if len(args) > 1 and not RELAY_HOST else DEFAULT_PORT)
     elif cmd == "join":
         run_join(args[1], int(args[2]) if len(args) > 2 else DEFAULT_PORT)
     else:
-        print("Usage: py chess_ui.py  local | host [port] | join <ip> [port]")
+        print("Usage: py chess_ui.py  local | host | join <code-or-ip>")
 
     pygame.quit()

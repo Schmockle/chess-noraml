@@ -1,8 +1,8 @@
 {
-  "gold": 18,
-  "wins": 1,
+  "gold": 43,
+  "wins": 3,
   "losses": 0,
-  "draws": 0,
+  "draws": 3,
   "owned_themes": [
     "classic",
     "forest"

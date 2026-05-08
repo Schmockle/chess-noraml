@@ -877,15 +877,27 @@ def draw_admin_overlay(surf, text, error=""):
 # ── Draw-offer overlay ─────────────────────────────────────────────────────────
 
 def draw_draw_offer(surf, mode):
-    """Draw the draw-offer overlay. Returns (accept_rect, decline_rect) or (None, None)."""
+    """Draw the draw-offer overlay.
+    sent mode:     returns (close_rect, None)
+    received mode: returns (accept_rect, decline_rect)
+    """
     ov_w, ov_h = 340, 130
     ov = pygame.Rect(WINDOW_W // 2 - ov_w // 2, WINDOW_H // 2 - ov_h // 2, ov_w, ov_h)
     pygame.draw.rect(surf, BG_SIDEBAR, ov, border_radius=10)
     pygame.draw.rect(surf, ORANGE,     ov, 2, border_radius=10)
+
+    # X button always present
+    close = pygame.Rect(ov.right - 32, ov.y + 6, 24, 24)
+    hover_c = close.collidepoint(pygame.mouse.get_pos())
+    pygame.draw.rect(surf, (110, 110, 110) if hover_c else (55, 55, 55), close, border_radius=4)
+    surf.blit(FONTS["sm"].render("✕", True, WHITE_TEXT),
+              FONTS["sm"].render("✕", True, WHITE_TEXT).get_rect(center=close.center))
+
     if mode == "sent":
         s = FONTS["md"].render("Draw offer sent…", True, GREY_TEXT)
         surf.blit(s, s.get_rect(center=ov.center))
-        return None, None
+        return close, None
+
     s = FONTS["md"].render("Opponent offers a draw", True, WHITE_TEXT)
     surf.blit(s, s.get_rect(center=(ov.centerx, ov.y + 38)))
     acc = pygame.Rect(ov.centerx - 100, ov.bottom - 46, 90, 30)
@@ -933,8 +945,8 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
         # local: manual flip button; network: locked to your color, button toggles perspective
         flip = flip_manual if conn is None else ((my_color == B) != flip_manual)
 
-        # Network: poll for opponent's move
-        if conn and not gs.game_over and gs.turn != my_color:
+        # Network: poll every frame so admin_win / resign / draw arrive immediately
+        if conn and not gs.game_over:
             try:
                 data = try_recv(conn)
                 if data:
@@ -955,6 +967,10 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         draw_offer_sent = False
                         draw_msg        = "Draw declined"
                         draw_msg_ticks  = pygame.time.get_ticks()
+                    elif data["type"] == "admin_win":
+                        gs.game_over = True
+                        gs.winner    = B if my_color == W else W
+                        gs.result    = "black_wins" if my_color == W else "white_wins"
             except ConnectionError:
                 gs.game_over = True; gs.result = "draw"
 
@@ -992,6 +1008,9 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                             gs.game_over = True
                             gs.winner    = winner
                             gs.result    = "white_wins" if winner == W else "black_wins"
+                            if conn:
+                                try: conn.send({"type": "admin_win"})
+                                except: pass
                         else:
                             admin_input_error = "Access denied."
                             admin_input_text  = ""
@@ -1033,6 +1052,13 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
 
                 # Admin overlay — intercept all clicks while open
                 if admin_overlay_open:
+                    continue
+
+                # Draw offer sent overlay — X button cancels, blocks other clicks
+                if draw_offer_sent:
+                    close_r, _ = draw_draw_offer(screen, "sent")
+                    if close_r and close_r.collidepoint(mx, my_pos):
+                        draw_offer_sent = False
                     continue
 
                 # Draw offer incoming — intercept all clicks

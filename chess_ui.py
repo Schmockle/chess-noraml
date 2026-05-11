@@ -79,6 +79,25 @@ else:
     _BASE = os.path.dirname(os.path.abspath(__file__))
 SAVE_PATH = os.path.join(_BASE, "chess_save.json")
 
+# ── Time controls ───────────────────────────────────────────────────────────────
+# (label, total_seconds or None, increment_seconds)
+TIME_CONTROLS = [
+    ("No time",  None, 0),
+    ("1 + 3",    60,   3),
+    ("5 min",    300,  0),
+    ("10 min",   600,  0),
+    ("30 min",   1800, 0),
+    ("60 min",   3600, 0),
+]
+
+def _fmt_clock(t):
+    """Format seconds as M:SS, or S.d when under 20 s, or ∞ when None."""
+    if t is None: return "∞"
+    if t < 20:    return f"{t:.1f}"
+    t = int(t)
+    m, s = divmod(t, 60)
+    return f"{m}:{s:02d}"
+
 # ── Relay server (fill in after deploying relay.py) ────────────────────────────
 RELAY_HOST = "turntable.proxy.rlwy.net"
 RELAY_PORT = 39077
@@ -298,6 +317,51 @@ def pixel_to_square(px, py, flip):
     return (r, c)
 
 
+# ── Arrow / highlight overlay ──────────────────────────────────────────────────
+
+def _draw_arrow_on(surf, sq1, sq2, flip, col=(80, 190, 80)):
+    r1, c1 = sq1; r2, c2 = sq2
+    rect1  = sq_rect(r1, c1, flip)
+    rect2  = sq_rect(r2, c2, flip)
+    sx, sy = float(rect1.centerx), float(rect1.centery)
+    ex, ey = float(rect2.centerx), float(rect2.centery)
+    dx, dy = ex - sx, ey - sy
+    ln = math.hypot(dx, dy)
+    if ln < 1: return
+    ux, uy = dx / ln, dy / ln
+    px, py = -uy, ux
+    shaft_w, head_w, head_len = 11, 24, 28
+    start = SQ * 0.28
+    sx2, sy2   = sx + ux * start, sy + uy * start
+    shaft_ex   = ex - ux * head_len
+    shaft_ey   = ey - uy * head_len
+    pts_shaft  = [
+        (sx2     + px * shaft_w/2, sy2     + py * shaft_w/2),
+        (sx2     - px * shaft_w/2, sy2     - py * shaft_w/2),
+        (shaft_ex - px * shaft_w/2, shaft_ey - py * shaft_w/2),
+        (shaft_ex + px * shaft_w/2, shaft_ey + py * shaft_w/2),
+    ]
+    pts_head = [
+        (ex, ey),
+        (shaft_ex + px * head_w/2, shaft_ey + py * head_w/2),
+        (shaft_ex - px * head_w/2, shaft_ey - py * head_w/2),
+    ]
+    pygame.draw.polygon(surf, (*col, 175), pts_shaft)
+    pygame.draw.polygon(surf, (*col, 175), pts_head)
+
+
+def draw_board_overlays(surf, arrows, sq_highlights, flip):
+    if not arrows and not sq_highlights: return
+    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov.fill((0, 0, 0, 0))
+    for sq, col in sq_highlights.items():
+        rect = sq_rect(sq[0], sq[1], flip)
+        pygame.draw.rect(ov, (*col, 110), rect)
+    for sq1, sq2, col in arrows:
+        _draw_arrow_on(ov, sq1, sq2, flip, col)
+    surf.blit(ov, (0, 0))
+
+
 # ── Piece drawing ──────────────────────────────────────────────────────────────
 
 def draw_piece(surf, piece_str, rect, fg=None, shadow_col=None):
@@ -315,7 +379,8 @@ def draw_piece(surf, piece_str, rect, fg=None, shadow_col=None):
 # ── Board drawing ──────────────────────────────────────────────────────────────
 
 def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_override=None,
-               my_theme_data=None, opp_theme_data=None, my_skin_data=None, opp_skin_data=None):
+               my_theme_data=None, opp_theme_data=None, my_skin_data=None, opp_skin_data=None,
+               skip_sq=None):
     board     = board_override if board_override is not None else gs.board
     last_move = last_move_override if last_move_override is not None else gs.last_move
     reviewing = board_override is not None
@@ -357,7 +422,7 @@ def draw_board(surf, gs: GameState, flip: bool, board_override=None, last_move_o
                     pygame.draw.circle(surf, BG_VALID, rect.center, SQ // 2 - 4, 5)
 
             p = board[r][c]
-            if p != EMPTY:
+            if p != EMPTY and (skip_sq is None or (r, c) != skip_sq):
                 if split and my_skin_data and opp_skin_data:
                     sd  = my_skin_data if is_my_half else opp_skin_data
                     fg  = sd["w"] if p[0] == W else sd["b"]
@@ -505,7 +570,8 @@ DRAW_RECT   = pygame.Rect(SIDEBAR_X + 118,  WINDOW_H - 50, 110, 30)
 SHOP_BTN    = pygame.Rect(SIDEBAR_X + 236,  WINDOW_H - 50, 100, 30)
 FLIP_BTN    = pygame.Rect(SIDEBAR_X,        WINDOW_H - 90, 330, 30)
 
-def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = False) -> pygame.Rect | None:
+def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = False,
+                 w_time=None, b_time=None, increment=0) -> pygame.Rect | None:
     pygame.draw.rect(surf, BG_SIDEBAR, (SIDEBAR_X - 8, 0, SIDEBAR_W + 18, WINDOW_H))
 
     y = 14
@@ -544,10 +610,35 @@ def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = 
 
     pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
 
+    # Clocks
+    if w_time is not None or b_time is not None:
+        half_w = (SIDEBAR_W - 14) // 2
+        for col, t, label, is_active in (
+            (W, w_time, "White", gs.turn == W and not gs.game_over),
+            (B, b_time, "Black", gs.turn == B and not gs.game_over),
+        ):
+            xoff = SIDEBAR_X if col == W else SIDEBAR_X + half_w + 8
+            low  = t is not None and t < 30
+            bg   = (50, 20, 20) if (low and is_active) else ((40, 40, 40) if is_active else (22, 22, 22))
+            tc   = (255, 80, 80) if (low and is_active) else (WHITE_TEXT if is_active else GREY_TEXT)
+            box  = pygame.Rect(xoff, y, half_w, 42)
+            pygame.draw.rect(surf, bg, box, border_radius=6)
+            if is_active:
+                pygame.draw.rect(surf, ORANGE if not low else (220, 60, 60), box, 2, border_radius=6)
+            lbl_s = FONTS["sm"].render(label, True, GREY_TEXT)
+            surf.blit(lbl_s, (xoff + 6, y + 4))
+            time_s = FONTS["lg"].render(_fmt_clock(t), True, tc)
+            surf.blit(time_s, time_s.get_rect(center=(box.centerx, y + 28)))
+        y += 48
+        if increment:
+            inc_s = FONTS["sm"].render(f"+{increment}s increment", True, GREY_TEXT)
+            surf.blit(inc_s, (SIDEBAR_X, y)); y += 16
+        pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
+
     # Move history header
     surf.blit(FONTS["sm"].render("MOVE HISTORY", True, GREY_TEXT), (SIDEBAR_X, y)); y += 18
 
-    HIST_H   = 270
+    HIST_H   = 222
     ROW_H    = 22
     hist_buf = pygame.Surface((SIDEBAR_W, HIST_H), pygame.SRCALPHA)
     hist_buf.fill((0, 0, 0, 0))
@@ -919,10 +1010,45 @@ def draw_draw_offer(surf, mode):
     return acc, dec
 
 
+# ── Chat panel ─────────────────────────────────────────────────────────────────
+
+_CHAT_TOP = 458   # y where chat section starts (after history + dividers)
+
+def draw_chat_panel(surf, messages, input_text, focused):
+    """Draw chat panel in sidebar. Returns the input_rect for click detection."""
+    y = _CHAT_TOP
+    surf.blit(FONTS["sm"].render("CHAT", True, GREY_TEXT), (SIDEBAR_X, y)); y += 18
+
+    MSG_H = 122
+    msg_bg = pygame.Surface((SIDEBAR_W - 10, MSG_H))
+    msg_bg.fill((20, 20, 20))
+    surf.blit(msg_bg, (SIDEBAR_X, y))
+
+    # Render messages bottom-up
+    my = MSG_H - 2
+    for m in reversed(messages[-30:]):
+        col = (200, 220, 255) if not m["mine"] else (230, 230, 230)
+        ls  = FONTS["sm"].render(m["text"], True, col)
+        my -= ls.get_height() + 2
+        if my < 0: break
+        surf.blit(ls, (SIDEBAR_X + 4, y + my))
+    y += MSG_H + 4
+
+    inp = pygame.Rect(SIDEBAR_X, y, SIDEBAR_W - 10, 28)
+    pygame.draw.rect(surf, (28, 28, 28), inp, border_radius=4)
+    pygame.draw.rect(surf, ORANGE if focused else (50, 50, 50), inp, 1, border_radius=4)
+    placeholder = "Say something…"
+    display = (input_text + "|") if focused else (input_text or placeholder)
+    tc = WHITE_TEXT if (input_text or focused) else GREY_TEXT
+    surf.blit(FONTS["sm"].render(display, True, tc), (inp.x + 6, inp.y + 7))
+    return inp
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
-                 opp_theme_data=None, opp_skin_data=None):
+                 opp_theme_data=None, opp_skin_data=None,
+                 time_secs=None, increment_secs=0):
     global _save
     if save is None:
         save = load_save()
@@ -948,6 +1074,21 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
     admin_overlay_open = False
     admin_input_text   = ""
     admin_input_error  = ""
+    w_time         = float(time_secs) if time_secs else None
+    b_time         = float(time_secs) if time_secs else None
+    clock_last_ms  = pygame.time.get_ticks() if time_secs else None
+    chat_messages      = []
+    chat_input         = ""
+    chat_focused       = False
+    chat_input_rect    = None
+    arrows             = []   # list of (sq1, sq2, color)
+    sq_highlights      = {}   # sq -> color
+    rclick_start       = None
+    drag_from          = None
+    drag_pos           = None
+    drag_active        = False
+    drag_start_pos     = None
+    drag_valid_moves   = []
 
     while True:
         # local: manual flip button; network: locked to your color, button toggles perspective
@@ -963,9 +1104,14 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         gs.winner    = my_color
                         gs.result    = "white_wins" if my_color == W else "black_wins"
                     elif data["type"] in ("move", "castle"):
+                        opp_turn = gs.turn
                         apply_opponent_move(gs, data, tracker)
                         scroll    = max(0, len(gs.move_history) // 2 * 22 - 250)
                         reviewing = False
+                        arrows.clear(); sq_highlights.clear()
+                        if increment_secs > 0:
+                            if opp_turn == W: w_time = (w_time or 0) + increment_secs
+                            else:             b_time = (b_time or 0) + increment_secs
                     elif data["type"] == "draw_offer":
                         draw_offer_recv = True
                     elif data["type"] == "draw_accept":
@@ -975,12 +1121,29 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         draw_offer_sent = False
                         draw_msg        = "Draw declined"
                         draw_msg_ticks  = pygame.time.get_ticks()
+                    elif data["type"] == "chat":
+                        txt = str(data.get("text", ""))[:120]
+                        chat_messages.append({"text": "Opp: " + txt, "mine": False})
                     elif data["type"] == "admin_win":
                         gs.game_over = True
                         gs.winner    = B if my_color == W else W
                         gs.result    = "black_wins" if my_color == W else "white_wins"
             except ConnectionError:
                 gs.game_over = True; gs.result = "draw"
+
+        # Clock tick
+        now_ms = pygame.time.get_ticks()
+        if clock_last_ms is not None and not gs.game_over and promo_rects is None:
+            elapsed_s = (now_ms - clock_last_ms) / 1000.0
+            if gs.turn == W and w_time is not None:
+                w_time = max(0.0, w_time - elapsed_s)
+                if w_time == 0.0:
+                    gs.game_over = True; gs.winner = B; gs.result = "black_wins"
+            elif gs.turn == B and b_time is not None:
+                b_time = max(0.0, b_time - elapsed_s)
+                if b_time == 0.0:
+                    gs.game_over = True; gs.winner = W; gs.result = "white_wins"
+        clock_last_ms = now_ms
 
         # Events
         for event in pygame.event.get():
@@ -997,6 +1160,76 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                     scroll_shop = max(0, scroll_shop - event.y * 20)
                 else:
                     scroll = max(0, scroll - event.y * 22)
+
+            # ── Drag: track mouse movement ──────────────────────────────────
+            if event.type == pygame.MOUSEMOTION:
+                if drag_from is not None and not gs.game_over:
+                    drag_pos = event.pos
+                    if drag_start_pos:
+                        ddx = event.pos[0] - drag_start_pos[0]
+                        ddy = event.pos[1] - drag_start_pos[1]
+                        if math.hypot(ddx, ddy) > 5:
+                            drag_active = True
+                            if gs.selected != drag_from:
+                                gs.selected    = drag_from
+                                gs.valid_moves = drag_valid_moves
+
+            # ── Drag: release to move ───────────────────────────────────────
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 1:
+                if drag_active and drag_from is not None and not gs.game_over:
+                    can_move = (conn is None or gs.turn == my_color)
+                    if can_move:
+                        sq = pixel_to_square(event.pos[0], event.pos[1], flip)
+                        fr2, fc2 = drag_from
+                        if sq and sq in drag_valid_moves:
+                            r2, c2 = sq
+                            piece2 = gs.board[fr2][fc2]
+                            if piece2[1] == "P" and (r2 == 0 or r2 == 7):
+                                gs.promotion_pending = (fr2, fc2, r2, c2)
+                                promo_rects = []
+                            else:
+                                drag_turn = gs.turn
+                                do_move(gs, fr2, fc2, r2, c2, tracker, conn=conn)
+                                scroll = max(0, len(gs.move_history) // 2 * 22 - 250)
+                                arrows.clear(); sq_highlights.clear()
+                                if increment_secs > 0:
+                                    if drag_turn == W: w_time = (w_time or 0) + increment_secs
+                                    else:              b_time = (b_time or 0) + increment_secs
+                            gs.selected = None; gs.valid_moves = []
+                        elif sq is None or color_of(gs.board[sq[0]][sq[1]]) != gs.turn:
+                            gs.selected = None; gs.valid_moves = []
+                drag_from = None; drag_pos = None; drag_active = False
+                drag_start_pos = None; drag_valid_moves = []
+
+            # ── Right-click: arrows & highlights ───────────────────────────
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                if not gs.game_over and not shop_open and not admin_overlay_open:
+                    sq = pixel_to_square(event.pos[0], event.pos[1], flip)
+                    if sq:
+                        rclick_start = sq
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+                if not gs.game_over and not shop_open:
+                    sq = pixel_to_square(event.pos[0], event.pos[1], flip)
+                    if sq and rclick_start:
+                        if sq == rclick_start:
+                            HLCOLS = [(80, 190, 80), (210, 150, 0), (180, 50, 50)]
+                            if sq in sq_highlights:
+                                ci = HLCOLS.index(sq_highlights[sq]) if sq_highlights[sq] in HLCOLS else -1
+                                if ci < len(HLCOLS) - 1:
+                                    sq_highlights[sq] = HLCOLS[ci + 1]
+                                else:
+                                    del sq_highlights[sq]
+                            else:
+                                sq_highlights[sq] = HLCOLS[0]
+                        else:
+                            arrow = (rclick_start, sq, (80, 190, 80))
+                            matches = [a for a in arrows if a[0] == rclick_start and a[1] == sq]
+                            if matches:
+                                for m in matches: arrows.remove(m)
+                            else:
+                                arrows.append(arrow)
+                rclick_start = None
 
             if event.type == pygame.KEYDOWN:
                 if admin_overlay_open:
@@ -1027,6 +1260,23 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         if ch and ch.isprintable():
                             admin_input_text  += ch
                             admin_input_error  = ""
+                    continue
+
+                if chat_focused and conn:
+                    if event.key == pygame.K_RETURN:
+                        msg = chat_input.strip()[:120]
+                        if msg:
+                            chat_messages.append({"text": "You: " + msg, "mine": True})
+                            try: conn.send({"type": "chat", "text": msg})
+                            except: pass
+                            chat_input = ""
+                    elif event.key == pygame.K_ESCAPE:
+                        chat_focused = False
+                    elif event.key == pygame.K_BACKSPACE:
+                        chat_input = chat_input[:-1]
+                    elif event.unicode and event.unicode.isprintable():
+                        if len(chat_input) < 120:
+                            chat_input += event.unicode
                     continue
 
                 if event.key == pygame.K_F12 and not gs.game_over:
@@ -1108,6 +1358,13 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                             save_data(save)
                             _save = save
                     continue
+
+                # Chat input focus
+                if conn and chat_input_rect and chat_input_rect.collidepoint(mx, my_pos):
+                    chat_focused = True
+                    continue
+                if chat_focused and not (conn and chat_input_rect and chat_input_rect.collidepoint(mx, my_pos)):
+                    chat_focused = False
 
                 # Shop button
                 if SHOP_BTN.collidepoint(mx, my_pos):
@@ -1194,25 +1451,37 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                             vm += [(cm[0], cm[1]) for cm in castle_moves(gs.board, gs.turn, gs.castling)]
                         if vm:
                             gs.selected = (r, c); gs.valid_moves = vm
+                            drag_from = (r, c); drag_start_pos = event.pos
+                            drag_pos = event.pos; drag_active = False; drag_valid_moves = vm
                 else:
                     fr, fc = gs.selected
                     if (r, c) == gs.selected:
-                        gs.selected = None; gs.valid_moves = []
+                        # Click on selected piece — start drag (don't deselect yet)
+                        drag_from = (r, c); drag_start_pos = event.pos
+                        drag_pos = event.pos; drag_active = False; drag_valid_moves = gs.valid_moves
                     elif (r, c) in gs.valid_moves:
                         piece = gs.board[fr][fc]
                         if piece[1] == "P" and (r == 0 or r == 7):
                             gs.promotion_pending = (fr, fc, r, c)
                             promo_rects = []
                         else:
+                            my_turn = gs.turn
                             do_move(gs, fr, fc, r, c, tracker, conn=conn)
                             scroll = max(0, len(gs.move_history) // 2 * 22 - 250)
+                            arrows.clear(); sq_highlights.clear()
+                            if increment_secs > 0:
+                                if my_turn == W: w_time = (w_time or 0) + increment_secs
+                                else:            b_time = (b_time or 0) + increment_secs
                     elif color_of(gs.board[r][c]) == gs.turn:
                         vm = legal_moves(gs.board, r, c, gs.en_passant)
                         if gs.board[r][c][1] == "K":
                             vm += [(cm[0], cm[1]) for cm in castle_moves(gs.board, gs.turn, gs.castling)]
                         gs.selected = (r, c); gs.valid_moves = vm
+                        drag_from = (r, c); drag_start_pos = event.pos
+                        drag_pos = event.pos; drag_active = False; drag_valid_moves = vm
                     else:
                         gs.selected = None; gs.valid_moves = []
+                        drag_from = None; drag_pos = None; drag_active = False; drag_valid_moves = []
 
         # Award gold once per game
         if gs.game_over and not gold_awarded:
@@ -1241,13 +1510,30 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
             draw_board(screen, gs, flip,
                        board_override=snap["board"],
                        last_move_override=snap["last_move"])
+            draw_board_overlays(screen, [], {}, flip)
             back_lbl = "Result" if gs.game_over else "Present"
             draw_review_nav(screen, view_idx, len(gs.move_history), tracker, back_label=back_lbl)
-            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual)
+            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual,
+                         w_time=w_time, b_time=b_time, increment=increment_secs)
             scroll = max(0, (view_idx // 2) * 22 - 120)
         else:
-            draw_board(screen, gs, flip)
-            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual)
+            _skip = drag_from if drag_active else None
+            draw_board(screen, gs, flip, skip_sq=_skip)
+            draw_board_overlays(screen, arrows, sq_highlights, flip)
+            draw_sidebar(screen, gs, tracker, scroll, flip_manual=flip_manual,
+                         w_time=w_time, b_time=b_time, increment=increment_secs)
+
+        # Floating dragged piece
+        if drag_active and drag_from and drag_pos:
+            fr_d, fc_d = drag_from
+            dp = gs.board[fr_d][fc_d]
+            if dp != EMPTY:
+                dr = pygame.Rect(drag_pos[0] - SQ // 2, drag_pos[1] - SQ // 2, SQ, SQ)
+                draw_piece(screen, dp, dr)
+
+        # Chat panel (network mode only)
+        if conn:
+            chat_input_rect = draw_chat_panel(screen, chat_messages, chat_input, chat_focused)
 
         if gs.promotion_pending:
             color = gs.turn if conn is None else my_color
@@ -1341,9 +1627,60 @@ def _show_net_error(msg):
     pygame.time.wait(3000)
 
 
+def _time_select_screen():
+    """Show time control selector. Returns (time_secs, increment_secs)."""
+    clk = pygame.time.Clock()
+    cx  = WINDOW_W // 2
+    BTN_W, BTN_H = 200, 52
+    cols = 3
+    pad  = 16
+    total_w = cols * BTN_W + (cols - 1) * pad
+    start_x = cx - total_w // 2
+    start_y = 280
+    selected = 0
+    while True:
+        screen.fill(BG_APP)
+        title = FONTS["xl"].render("Time Control", True, WHITE_TEXT)
+        screen.blit(title, title.get_rect(center=(cx, 180)))
+        hint = FONTS["sm"].render("Pick how long each player gets", True, GREY_TEXT)
+        screen.blit(hint, hint.get_rect(center=(cx, 230)))
+        rects = []
+        for i, (label, secs, inc) in enumerate(TIME_CONTROLS):
+            col_i = i % cols
+            row_i = i // cols
+            rx = start_x + col_i * (BTN_W + pad)
+            ry = start_y + row_i * (BTN_H + 12)
+            r  = pygame.Rect(rx, ry, BTN_W, BTN_H)
+            rects.append(r)
+            active = (i == selected)
+            bg = (50, 30, 0) if active else (35, 35, 35)
+            pygame.draw.rect(screen, bg, r, border_radius=8)
+            pygame.draw.rect(screen, ORANGE if active else (60, 60, 60), r, 2, border_radius=8)
+            ls = FONTS["md"].render(label, True, WHITE_TEXT)
+            screen.blit(ls, ls.get_rect(center=r.center))
+        # Confirm button
+        conf = pygame.Rect(cx - 100, start_y + 2 * (BTN_H + 12) + 20, 200, 46)
+        hover = conf.collidepoint(pygame.mouse.get_pos())
+        pygame.draw.rect(screen, ORANGE if hover else (55, 30, 0), conf, border_radius=8)
+        cs = FONTS["lg"].render("Play!", True, (10, 10, 10) if hover else WHITE_TEXT)
+        screen.blit(cs, cs.get_rect(center=conf.center))
+        pygame.display.flip()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                for i, r in enumerate(rects):
+                    if r.collidepoint(ev.pos):
+                        selected = i
+                if conf.collidepoint(ev.pos):
+                    _, secs, inc = TIME_CONTROLS[selected]
+                    return secs, inc
+        clk.tick(30)
+
+
 def main_menu():
-    """Pygame mode-select screen. Returns ("local",None), ("host",None), or ("join", code_str)."""
-    clock = pygame.time.Clock()
+    """Mode-select → time-select. Returns (mode, param, time_secs, increment_secs)."""
+    clk = pygame.time.Clock()
     join_mode = False
     join_code = ""
     BTN_W, BTN_H = 240, 56
@@ -1375,31 +1712,34 @@ def main_menu():
                 pygame.quit(); sys.exit()
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 if local_rect.collidepoint(ev.pos):
-                    return "local", None
+                    t_secs, t_inc = _time_select_screen()
+                    return "local", None, t_secs, t_inc
                 if host_rect.collidepoint(ev.pos):
-                    return "host", None
+                    t_secs, t_inc = _time_select_screen()
+                    return "host", None, t_secs, t_inc
                 if join_rect.collidepoint(ev.pos):
                     join_mode = True; join_code = ""
             if join_mode and ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_RETURN and len(join_code) == 4:
-                    return "join", join_code
+                    return "join", join_code, None, 0  # joiner gets time from host
                 elif ev.key == pygame.K_ESCAPE:
                     join_mode = False; join_code = ""
                 elif ev.key == pygame.K_BACKSPACE:
                     join_code = join_code[:-1]
                 elif ev.unicode.isdigit() and len(join_code) < 4:
                     join_code += ev.unicode
-        clock.tick(30)
+        clk.tick(30)
 
 
-def run_local():
+def run_local(time_secs=None, increment_secs=0):
     global _save
     _save = load_save()
     apply_theme(_save)
     while True:
         gs      = GameState()
         tracker = AccuracyTracker(StockfishAnalyzer())
-        result  = _pygame_loop(gs, tracker, save=_save)
+        result  = _pygame_loop(gs, tracker, save=_save,
+                               time_secs=time_secs, increment_secs=increment_secs)
         tracker.stop()
         if result != "again": break
 
@@ -1436,7 +1776,7 @@ def _readline_sock(sock):
     return json.loads(line), rest
 
 
-def run_host(port):
+def run_host(port, time_secs=None, increment_secs=0):
     global _save
     _save = load_save()
     apply_theme(_save)
@@ -1486,12 +1826,14 @@ def run_host(port):
     conn = status["_conn"]
     my_color  = random.choice([W, B])
     opp_color = B if my_color == W else W
-    conn.send({"type": "color", "color": opp_color})
+    conn.send({"type": "color", "color": opp_color,
+               "time_secs": time_secs, "increment_secs": increment_secs})
     opp_theme_data, opp_skin_data = _theme_handshake_host(conn)
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
     _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
-                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data)
+                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data,
+                 time_secs=time_secs, increment_secs=increment_secs)
     tracker.stop(); conn.close()
 
 
@@ -1529,12 +1871,16 @@ def run_join(host_ip, port):
         _show_net_error(f"Error: {status['error']}"); return
 
     conn = status["_conn"]
-    my_color = conn.recv()["color"]
+    color_msg   = conn.recv()
+    my_color    = color_msg["color"]
+    time_secs   = color_msg.get("time_secs")
+    inc_secs    = color_msg.get("increment_secs", 0)
     opp_theme_data, opp_skin_data = _theme_handshake_join(conn)
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
     _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
-                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data)
+                 opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data,
+                 time_secs=time_secs, increment_secs=inc_secs)
     tracker.stop(); conn.close()
 
 
@@ -1555,11 +1901,11 @@ if __name__ == "__main__":
             run_join(args[1], int(args[2]) if len(args) > 2 else DEFAULT_PORT)
     else:
         while True:
-            mode, param = main_menu()
+            mode, param, t_secs, t_inc = main_menu()
             if mode == "local":
-                run_local()
+                run_local(time_secs=t_secs, increment_secs=t_inc)
             elif mode == "host":
-                run_host(DEFAULT_PORT)
+                run_host(DEFAULT_PORT, time_secs=t_secs, increment_secs=t_inc)
             elif mode == "join":
                 run_join(param, DEFAULT_PORT)
 

@@ -9,8 +9,8 @@ Usage:
 
 import sys, os, copy, math, threading, queue, socket, json, random, hashlib
 
-# ── Admin auth (hardcoded — do not modify) ─────────────────────────────────────
-ADMIN_HASH = hashlib.sha256(bytes([83,99,104,109,48,99,107,108,101,33])).hexdigest()
+# ── Admin auth ─────────────────────────────────────────────────────────────────
+ADMIN_HASH = "920c95a6215f47d1f98391f8795f86279f76589822acf8104f5d74d7344b75d8"
 import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))

@@ -10,7 +10,7 @@ Usage:
 import sys, os, copy, math, threading, queue, socket, json, random, hashlib
 
 # ── Admin auth ─────────────────────────────────────────────────────────────────
-ADMIN_HASH = "920c95a6215f47d1f98391f8795f86279f76589822acf8104f5d74d7344b75d8"
+ADMIN_HASH = "5931ffd86d51079992e7ed4ebe2ce0779d9843578281431834a5e742deb041eb"
 import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -73,7 +73,11 @@ PIECE_SKINS = {
     "inferno":  {"name": "Inferno",  "price": 200, "w": (255, 210,  80), "b": (200,  50,  10), "ws": ( 80,  50,   0), "bs": ( 60,  10,  0), "desc": "Gold & ember"},
 }
 
-SAVE_PATH = os.path.join(os.path.dirname(os.path.abspath(__file__)), "chess_save.json")
+if getattr(sys, 'frozen', False):
+    _BASE = os.path.dirname(sys.executable)
+else:
+    _BASE = os.path.dirname(os.path.abspath(__file__))
+SAVE_PATH = os.path.join(_BASE, "chess_save.json")
 
 # ── Relay server (fill in after deploying relay.py) ────────────────────────────
 RELAY_HOST = "turntable.proxy.rlwy.net"
@@ -1297,6 +1301,97 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
 
 # ── Entry points ───────────────────────────────────────────────────────────────
 
+def _net_waiting_screen(status):
+    """Show a pygame waiting/connecting screen. status dict: {label, code, connected, error}."""
+    clock = pygame.time.Clock()
+    cx, cy = WINDOW_W // 2, WINDOW_H // 2
+    dots = 0; dot_timer = 0
+    while not status.get("connected") and not status.get("error"):
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+        screen.fill(BG_APP)
+        code = status.get("code")
+        if code:
+            lbl = FONTS["lg"].render("Room Code", True, GREY_TEXT)
+            screen.blit(lbl, lbl.get_rect(center=(cx, cy - 110)))
+            code_surf = FONTS["xl"].render(code, True, ORANGE)
+            screen.blit(code_surf, code_surf.get_rect(center=(cx, cy - 50)))
+            hint = FONTS["sm"].render("Share this code with your opponent", True, GREY_TEXT)
+            screen.blit(hint, hint.get_rect(center=(cx, cy + 10)))
+            wait_lbl = status.get("label", "Waiting") + "." * (dots + 1)
+            w = FONTS["md"].render(wait_lbl, True, WHITE_TEXT)
+            screen.blit(w, w.get_rect(center=(cx, cy + 55)))
+        else:
+            lbl = status.get("label", "Connecting") + "." * (dots + 1)
+            s = FONTS["md"].render(lbl, True, WHITE_TEXT)
+            screen.blit(s, s.get_rect(center=(cx, cy)))
+        dot_timer += clock.get_time()
+        if dot_timer >= 500:
+            dots = (dots + 1) % 3; dot_timer = 0
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def _show_net_error(msg):
+    screen.fill(BG_APP)
+    s = FONTS["md"].render(msg, True, RED_TEXT)
+    screen.blit(s, s.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2)))
+    pygame.display.flip()
+    pygame.time.wait(3000)
+
+
+def main_menu():
+    """Pygame mode-select screen. Returns ("local",None), ("host",None), or ("join", code_str)."""
+    clock = pygame.time.Clock()
+    join_mode = False
+    join_code = ""
+    BTN_W, BTN_H = 240, 56
+    cx = WINDOW_W // 2
+    while True:
+        screen.fill(BG_APP)
+        title = FONTS["xl"].render("Chess", True, WHITE_TEXT)
+        screen.blit(title, title.get_rect(center=(cx, 130)))
+        local_rect = pygame.Rect(cx - BTN_W // 2, 220, BTN_W, BTN_H)
+        host_rect  = pygame.Rect(cx - BTN_W // 2, 296, BTN_W, BTN_H)
+        join_rect  = pygame.Rect(cx - BTN_W // 2, 372, BTN_W, BTN_H)
+        for rect, label in [(local_rect, "Local"), (host_rect, "Host (online)"), (join_rect, "Join (online)")]:
+            pygame.draw.rect(screen, (35, 35, 35), rect, border_radius=8)
+            pygame.draw.rect(screen, ORANGE, rect, 2, border_radius=8)
+            t = FONTS["lg"].render(label, True, WHITE_TEXT)
+            screen.blit(t, t.get_rect(center=rect.center))
+        if join_mode:
+            box = pygame.Rect(cx - 110, 460, 220, 52)
+            pygame.draw.rect(screen, (28, 28, 28), box, border_radius=8)
+            pygame.draw.rect(screen, ORANGE, box, 2, border_radius=8)
+            display_code = join_code if join_code else "    "
+            cs = FONTS["xl"].render(display_code, True, WHITE_TEXT if join_code else GREY_TEXT)
+            screen.blit(cs, cs.get_rect(center=box.center))
+            hint = FONTS["sm"].render("Type 4-digit room code, press Enter", True, GREY_TEXT)
+            screen.blit(hint, hint.get_rect(center=(cx, 530)))
+        pygame.display.flip()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if local_rect.collidepoint(ev.pos):
+                    return "local", None
+                if host_rect.collidepoint(ev.pos):
+                    return "host", None
+                if join_rect.collidepoint(ev.pos):
+                    join_mode = True; join_code = ""
+            if join_mode and ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_RETURN and len(join_code) == 4:
+                    return "join", join_code
+                elif ev.key == pygame.K_ESCAPE:
+                    join_mode = False; join_code = ""
+                elif ev.key == pygame.K_BACKSPACE:
+                    join_code = join_code[:-1]
+                elif ev.unicode.isdigit() and len(join_code) < 4:
+                    join_code += ev.unicode
+        clock.tick(30)
+
+
 def run_local():
     global _save
     _save = load_save()
@@ -1346,43 +1441,53 @@ def run_host(port):
     _save = load_save()
     apply_theme(_save)
 
+    status = {"label": "Connecting to relay", "code": None, "connected": False, "error": None, "_conn": None}
+
     if RELAY_HOST:
-        print("Connecting to relay…")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((RELAY_HOST, RELAY_PORT))
-        sock.sendall(json.dumps({"action": "host"}).encode() + b"\n")
-        resp, buf = _readline_sock(sock)
-        code = resp["code"]
-        print(f"\n  ┌──────────────────────────────┐")
-        print(f"  │  Room code:   {code}            │")
-        print(f"  │  Opponent:  py chess_ui.py join {code}  │")
-        print(f"  └──────────────────────────────┘\n")
-        print("Waiting for opponent…")
-        # Wait for relay's {"joined": true} — may already be in buf
-        conn     = Connection(sock)
-        conn.buf = buf
-        conn.recv()   # blocks until joiner arrives
-        print("Opponent connected!")
+        def _relay_host():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((RELAY_HOST, RELAY_PORT))
+                sock.sendall(json.dumps({"action": "host"}).encode() + b"\n")
+                resp, buf = _readline_sock(sock)
+                status["code"] = resp["code"]
+                status["label"] = "Waiting for opponent"
+                conn = Connection(sock)
+                conn.buf = buf
+                conn.recv()
+                status["_conn"] = conn
+                status["connected"] = True
+            except Exception as e:
+                status["error"] = str(e)
+        threading.Thread(target=_relay_host, daemon=True).start()
     else:
         try:
             s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
             s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
         except: ip = "127.0.0.1"
-        print(f"Hosting on port {port}  |  Your IP: {ip}")
-        print(f"Opponent runs:  py chess_ui.py join {ip} {port}\n")
-        srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        srv.bind(("0.0.0.0", port)); srv.listen(1)
-        print("Waiting for opponent…")
-        client_sock, addr = srv.accept(); srv.close()
-        print(f"Opponent connected from {addr[0]}!")
-        conn = Connection(client_sock)
+        status["code"] = ip
+        status["label"] = f"Port {port}  —  Waiting for opponent"
+        def _lan_host():
+            try:
+                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                srv.bind(("0.0.0.0", port)); srv.listen(1)
+                client_sock, _ = srv.accept(); srv.close()
+                status["_conn"] = Connection(client_sock)
+                status["connected"] = True
+            except Exception as e:
+                status["error"] = str(e)
+        threading.Thread(target=_lan_host, daemon=True).start()
 
+    _net_waiting_screen(status)
+    if status["error"]:
+        _show_net_error(f"Error: {status['error']}"); return
+
+    conn = status["_conn"]
     my_color  = random.choice([W, B])
     opp_color = B if my_color == W else W
     conn.send({"type": "color", "color": opp_color})
     opp_theme_data, opp_skin_data = _theme_handshake_host(conn)
-    print(f"You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
     _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
@@ -1395,28 +1500,37 @@ def run_join(host_ip, port):
     _save = load_save()
     apply_theme(_save)
 
-    # 4-digit code → relay mode
-    if RELAY_HOST and host_ip.isdigit() and len(host_ip) <= 4:
-        code = host_ip.zfill(4)
-        print(f"Connecting to relay (room {code})…")
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((RELAY_HOST, RELAY_PORT))
-        sock.sendall(json.dumps({"action": "join", "code": code}).encode() + b"\n")
-        resp, buf = _readline_sock(sock)
-        if "error" in resp:
-            print(f"Error: {resp['error']}")
-            return
-        print("Connected to host!")
-        conn     = Connection(sock)
-        conn.buf = buf
-    else:
-        sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        sock.connect((host_ip, port))
-        conn = Connection(sock)
+    status = {"label": "Connecting", "code": None, "connected": False, "error": None, "_conn": None}
 
+    def _do_join():
+        try:
+            if RELAY_HOST and host_ip.isdigit() and len(host_ip) <= 4:
+                code = host_ip.zfill(4)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((RELAY_HOST, RELAY_PORT))
+                sock.sendall(json.dumps({"action": "join", "code": code}).encode() + b"\n")
+                resp, buf = _readline_sock(sock)
+                if "error" in resp:
+                    status["error"] = resp["error"]; return
+                conn = Connection(sock)
+                conn.buf = buf
+            else:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((host_ip, port))
+                conn = Connection(sock)
+            status["_conn"] = conn
+            status["connected"] = True
+        except Exception as e:
+            status["error"] = str(e)
+
+    threading.Thread(target=_do_join, daemon=True).start()
+    _net_waiting_screen(status)
+    if status["error"]:
+        _show_net_error(f"Error: {status['error']}"); return
+
+    conn = status["_conn"]
     my_color = conn.recv()["color"]
     opp_theme_data, opp_skin_data = _theme_handshake_join(conn)
-    print(f"Connected! You are {'White' if my_color==W else 'Black'}.")
     gs      = GameState()
     tracker = AccuracyTracker(StockfishAnalyzer())
     _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
@@ -1431,22 +1545,22 @@ if __name__ == "__main__":
     init_fonts()
 
     args = sys.argv[1:]
-    if not args or args[0] in ("-h", "--help"):
-        print("Usage: py chess_ui.py  local")
-        print("       py chess_ui.py  host             (relay — needs RELAY_HOST set)")
-        print("       py chess_ui.py  join <4-digit>   (relay — needs RELAY_HOST set)")
-        print("       py chess_ui.py  host [port]      (direct LAN)")
-        print("       py chess_ui.py  join <ip> [port] (direct LAN)")
-        sys.exit(0)
-
-    cmd = args[0].lower()
-    if cmd == "local":
-        run_local()
-    elif cmd == "host":
-        run_host(int(args[1]) if len(args) > 1 and not RELAY_HOST else DEFAULT_PORT)
-    elif cmd == "join":
-        run_join(args[1], int(args[2]) if len(args) > 2 else DEFAULT_PORT)
+    if args:
+        cmd = args[0].lower()
+        if cmd == "local":
+            run_local()
+        elif cmd == "host":
+            run_host(int(args[1]) if len(args) > 1 and not RELAY_HOST else DEFAULT_PORT)
+        elif cmd == "join":
+            run_join(args[1], int(args[2]) if len(args) > 2 else DEFAULT_PORT)
     else:
-        print("Usage: py chess_ui.py  local | host | join <code-or-ip>")
+        while True:
+            mode, param = main_menu()
+            if mode == "local":
+                run_local()
+            elif mode == "host":
+                run_host(DEFAULT_PORT)
+            elif mode == "join":
+                run_join(param, DEFAULT_PORT)
 
     pygame.quit()

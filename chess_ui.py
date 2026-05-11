@@ -32,6 +32,21 @@ BOARD_PX   = SQ * 8
 SIDEBAR_X  = BOARD_X + BOARD_PX + 20
 SIDEBAR_W  = WINDOW_W - SIDEBAR_X - 10
 
+def update_layout(w, h):
+    global WINDOW_W, WINDOW_H, BOARD_X, BOARD_Y, SQ, BOARD_PX, SIDEBAR_X, SIDEBAR_W
+    global RESIGN_RECT, DRAW_RECT, SHOP_BTN, FLIP_BTN
+    WINDOW_W, WINDOW_H = w, h
+    BOARD_X  = 30
+    BOARD_Y  = 40
+    SQ       = max(40, min(90, (h - 80) // 8))
+    BOARD_PX = SQ * 8
+    SIDEBAR_X = BOARD_X + BOARD_PX + 20
+    SIDEBAR_W = w - SIDEBAR_X - 10
+    RESIGN_RECT = pygame.Rect(SIDEBAR_X,        h - 50, 110, 30)
+    DRAW_RECT   = pygame.Rect(SIDEBAR_X + 118,  h - 50, 110, 30)
+    SHOP_BTN    = pygame.Rect(SIDEBAR_X + 236,  h - 50, 100, 30)
+    FLIP_BTN    = pygame.Rect(SIDEBAR_X,        h - 90, 330, 30)
+
 # ── Palette (dbrand-inspired) ──────────────────────────────────────────────────
 BG_APP       = (10,  10,  10)
 BG_SIDEBAR   = (18,  18,  18)
@@ -149,14 +164,15 @@ _save   = None  # loaded on startup
 
 
 def init_fonts():
-    FONTS["piece"]      = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 52)
-    FONTS["piece_sm"]   = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 24)
-    FONTS["piece_hist"] = pygame.font.SysFont("segoeuisymbol,symbola,unifont", 16)
+    ps = max(20, int(SQ * 0.65))
+    FONTS["piece"]      = pygame.font.SysFont("segoeuisymbol,symbola,unifont", ps)
+    FONTS["piece_sm"]   = pygame.font.SysFont("segoeuisymbol,symbola,unifont", max(12, ps // 2))
+    FONTS["piece_hist"] = pygame.font.SysFont("segoeuisymbol,symbola,unifont", max(10, ps // 3))
     FONTS["sm"]       = pygame.font.SysFont("segoeui,arial", 14)
     FONTS["md"]       = pygame.font.SysFont("segoeui,arial", 18, bold=True)
     FONTS["lg"]       = pygame.font.SysFont("segoeui,arial", 24, bold=True)
     FONTS["xl"]       = pygame.font.SysFont("segoeui,arial", 40, bold=True)
-    FONTS["coord"]    = pygame.font.SysFont("segoeui,arial", 11)
+    FONTS["coord"]    = pygame.font.SysFont("segoeui,arial", max(9, int(SQ * 0.14)))
 
 
 # ── Game state ─────────────────────────────────────────────────────────────────
@@ -1155,6 +1171,9 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                 tracker.stop()
                 return "quit"
 
+            if event.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(event)
+
             if event.type == pygame.MOUSEWHEEL:
                 if shop_open:
                     scroll_shop = max(0, scroll_shop - event.y * 20)
@@ -1441,6 +1460,7 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
 
                 sq = pixel_to_square(mx, my_pos, flip)
                 if sq is None: continue
+                arrows.clear(); sq_highlights.clear()
                 r, c = sq
 
                 if gs.selected is None:
@@ -1585,6 +1605,323 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
         clock.tick(60)
 
 
+# ── Checkers ──────────────────────────────────────────────────────────────────
+
+CK_W, CK_B   = "w", "b"
+CK_WK, CK_BK = "W", "B"
+
+
+def make_checkers_board():
+    bd = [[""] * 8 for _ in range(8)]
+    for r in range(8):
+        for c in range(8):
+            if (r + c) % 2 == 1:
+                if r <= 2:   bd[r][c] = CK_W
+                elif r >= 5: bd[r][c] = CK_B
+    return bd
+
+
+def ck_color(p):
+    if p in (CK_W, CK_WK): return CK_W
+    if p in (CK_B, CK_BK): return CK_B
+    return None
+
+
+def _ck_jumps(board, r, c, piece, captured):
+    """Return all complete jump-chain landing-square lists from (r,c)."""
+    is_king = piece.isupper()
+    turn    = ck_color(piece)
+    opp     = CK_B if turn == CK_W else CK_W
+    dirs    = [(1,-1),(1,1),(-1,-1),(-1,1)] if is_king else ([(1,-1),(1,1)] if turn == CK_W else [(-1,-1),(-1,1)])
+    results = []
+    for dr, dc in dirs:
+        mr, mc = r+dr, c+dc
+        lr, lc = r+2*dr, c+2*dc
+        if not (0<=mr<8 and 0<=mc<8 and 0<=lr<8 and 0<=lc<8): continue
+        if (mr, mc) in captured:             continue
+        if ck_color(board[mr][mc]) != opp:   continue
+        if board[lr][lc] != "":             continue
+        promoted = (turn == CK_W and lr == 7 and piece == CK_W) or \
+                   (turn == CK_B and lr == 0 and piece == CK_B)
+        np = (CK_WK if turn == CK_W else CK_BK) if promoted else piece
+        if promoted:
+            results.append([(lr, lc)])          # turn ends on promotion
+        else:
+            subs = _ck_jumps(board, lr, lc, np, captured | {(mr, mc)})
+            if subs:
+                for s in subs: results.append([(lr, lc)] + s)
+            else:
+                results.append([(lr, lc)])
+    return results
+
+
+def ck_piece_moves(board, r, c):
+    piece = board[r][c]
+    if not piece: return []
+    turn    = ck_color(piece)
+    is_king = piece.isupper()
+    dirs    = [(1,-1),(1,1),(-1,-1),(-1,1)] if is_king else ([(1,-1),(1,1)] if turn == CK_W else [(-1,-1),(-1,1)])
+    jumps   = _ck_jumps(board, r, c, piece, set())
+    if jumps:
+        return [[(r, c)] + j for j in jumps]
+    return [[(r, c), (r+dr, c+dc)] for dr, dc in dirs
+            if 0<=r+dr<8 and 0<=c+dc<8 and board[r+dr][c+dc] == ""]
+
+
+def ck_all_moves(board, turn):
+    all_m = []
+    for r in range(8):
+        for c in range(8):
+            if ck_color(board[r][c]) == turn:
+                all_m.extend(ck_piece_moves(board, r, c))
+    if any(abs(m[1][0]-m[0][0]) == 2 for m in all_m):
+        return [m for m in all_m if abs(m[1][0]-m[0][0]) == 2]
+    return all_m
+
+
+def apply_checkers_move(board, move):
+    bd = [row[:] for row in board]
+    piece = bd[move[0][0]][move[0][1]]
+    bd[move[0][0]][move[0][1]] = ""
+    for i in range(len(move)-1):
+        r1, c1 = move[i]; r2, c2 = move[i+1]
+        if abs(r2-r1) == 2:
+            bd[(r1+r2)//2][(c1+c2)//2] = ""
+    rf, cf = move[-1]
+    if piece == CK_W and rf == 7: piece = CK_WK
+    if piece == CK_B and rf == 0: piece = CK_BK
+    bd[rf][cf] = piece
+    return bd
+
+
+class CheckersState:
+    def __init__(self):
+        self.board       = make_checkers_board()
+        self.turn        = CK_W
+        self.selected    = None
+        self.valid_moves = []
+        self.game_over   = False
+        self.winner      = None
+        self.last_move   = []
+
+
+def draw_checkers_board(surf, cs: CheckersState, flip: bool):
+    last_set    = set(map(tuple, cs.last_move)) if cs.last_move else set()
+    valid_dests = {m[-1] for m in cs.valid_moves} if cs.selected else set()
+    all_m       = ck_all_moves(cs.board, cs.turn) if not cs.game_over else []
+    selectable  = {m[0] for m in all_m}
+
+    for r in range(8):
+        for c in range(8):
+            rect    = sq_rect(r, c, flip)
+            is_dark = (r + c) % 2 == 1
+            sq      = (r, c)
+            if cs.selected and sq == cs.selected:
+                col = BG_SELECTED
+            elif sq in valid_dests:
+                col = BG_VALID
+            elif sq in last_set:
+                col = BG_LAST
+            else:
+                col = BG_DARK_SQ if is_dark else BG_LIGHT_SQ
+            pygame.draw.rect(surf, col, rect)
+
+            # Subtle glow on selectable pieces when none is selected
+            if not cs.selected and sq in selectable:
+                pygame.draw.rect(surf, (80, 70, 20), rect, 2)
+
+            piece = cs.board[r][c]
+            if not piece: continue
+            color   = ck_color(piece)
+            is_king = piece.isupper()
+            pcx, pcy = rect.centerx, rect.centery
+            radius   = max(8, SQ // 2 - 5)
+
+            # Shadow
+            pygame.draw.circle(surf, (0, 0, 0), (pcx + 2, pcy + 3), radius)
+
+            if color == CK_W:
+                outer = (210, 205, 195)
+                inner = (245, 242, 235)
+                crown = (200, 160, 20)
+            else:
+                outer = (55, 32, 18)
+                inner = (95, 58, 35)
+                crown = (200, 160, 20)
+
+            pygame.draw.circle(surf, outer, (pcx, pcy), radius)
+            pygame.draw.circle(surf, inner, (pcx, pcy), radius - 3)
+            pygame.draw.circle(surf, outer, (pcx, pcy), radius - 3, 1)
+
+            if is_king:
+                glyph = "♕" if color == CK_W else "♛"
+                ks = FONTS["piece_sm"].render(glyph, True, crown)
+                surf.blit(ks, ks.get_rect(center=(pcx, pcy)))
+
+    # Valid-move dots on empty dark squares
+    if cs.selected:
+        for dest in valid_dests:
+            dr2, dc2 = dest
+            if cs.board[dr2][dc2] == "":
+                pygame.draw.circle(surf, BG_VALID, sq_rect(dr2, dc2, flip).center, 9)
+
+    # Coordinate labels
+    for dc in range(8):
+        af  = (7-dc) if flip else dc
+        lbl = FONTS["coord"].render(chr(ord("a")+af), True, GREY_TEXT)
+        surf.blit(lbl, (BOARD_X + dc*SQ + 3, BOARD_Y + 7*SQ + SQ - 13))
+    for dr in range(8):
+        ar  = dr if flip else (7-dr)
+        lbl = FONTS["coord"].render(str(ar+1), True, GREY_TEXT)
+        surf.blit(lbl, (BOARD_X + 3, BOARD_Y + dr*SQ + 3))
+
+
+def draw_checkers_sidebar(surf, cs: CheckersState):
+    pygame.draw.rect(surf, BG_SIDEBAR, (SIDEBAR_X - 8, 0, SIDEBAR_W + 18, WINDOW_H))
+    y = 14
+    surf.blit(FONTS["xl"].render("CHECKERS", True, ORANGE), (SIDEBAR_X, y))
+    y += 52
+
+    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 10
+
+    if not cs.game_over:
+        who = "White" if cs.turn == CK_W else "Black"
+        col = WHITE_TEXT if cs.turn == CK_W else GREY_TEXT
+        surf.blit(FONTS["md"].render(f"{who}'s turn", True, col), (SIDEBAR_X, y)); y += 28
+
+        all_m = ck_all_moves(cs.board, cs.turn)
+        must_jump = bool(all_m) and abs(all_m[0][1][0]-all_m[0][0][0]) == 2
+        if must_jump:
+            surf.blit(FONTS["sm"].render("Jump is mandatory!", True, (220, 120, 40)), (SIDEBAR_X, y)); y += 20
+        if cs.selected:
+            surf.blit(FONTS["sm"].render("Click a highlighted square", True, GREY_TEXT), (SIDEBAR_X, y)); y += 18
+    else:
+        wname = ("White" if cs.winner == CK_W else "Black") if cs.winner else "Draw"
+        col   = WHITE_TEXT if cs.winner == CK_W else GREY_TEXT
+        surf.blit(FONTS["lg"].render(f"{wname} wins!", True, col), (SIDEBAR_X, y)); y += 32
+
+    y += 8
+    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 12
+
+    # Piece counts
+    for label, ck_col, text_col in (("White", CK_W, WHITE_TEXT), ("Black", CK_B, GREY_TEXT)):
+        men   = sum(1 for row in cs.board for p in row if p == ck_col)
+        kings = sum(1 for row in cs.board for p in row if p == (CK_WK if ck_col == CK_W else CK_BK))
+        surf.blit(FONTS["sm"].render(f"{label}:  {men} men  {kings} kings", True, text_col), (SIDEBAR_X, y))
+        y += 22
+
+    # Buttons
+    mouse   = pygame.mouse.get_pos()
+    again_r = pygame.Rect(SIDEBAR_X, WINDOW_H - 90, 150, 30)
+    menu_r  = pygame.Rect(SIDEBAR_X, WINDOW_H - 50, 150, 30)
+    for rect, label in ((again_r, "Play Again"), (menu_r, "← Main Menu")):
+        hover = rect.collidepoint(mouse)
+        pygame.draw.rect(surf, ORANGE if hover else (55,30,0), rect, border_radius=5)
+        ls = FONTS["sm"].render(label, True, (10,10,10) if hover else WHITE_TEXT)
+        surf.blit(ls, ls.get_rect(center=rect.center))
+    return again_r, menu_r
+
+
+def _resize_event(event):
+    """Handle both Pygame 1 VIDEORESIZE and Pygame 2 WINDOWRESIZED."""
+    if event.type == pygame.VIDEORESIZE:
+        w, h = event.w, event.h
+    else:
+        w, h = pygame.display.get_surface().get_size()
+    update_layout(w, h)
+    init_fonts()
+
+
+def _checkers_loop(cs: CheckersState):
+    clock = pygame.time.Clock()
+    flip  = False
+
+    while True:
+        for event in pygame.event.get():
+            if event.type == pygame.QUIT:
+                return "quit"
+            if event.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(event)
+
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
+                mx2, my2 = event.pos
+                again_r = pygame.Rect(SIDEBAR_X, WINDOW_H - 90, 150, 30)
+                menu_r  = pygame.Rect(SIDEBAR_X, WINDOW_H - 50, 150, 30)
+                if again_r.collidepoint(mx2, my2): return "again"
+                if menu_r.collidepoint(mx2, my2):  return "menu"
+
+                if cs.game_over: continue
+
+                sq2 = pixel_to_square(mx2, my2, flip)
+                if sq2 is None: continue
+                r2, c2 = sq2
+
+                if cs.selected:
+                    dest_moves = [m for m in cs.valid_moves if m[-1] == (r2, c2)]
+                    if dest_moves:
+                        cs.last_move = dest_moves[0]
+                        cs.board     = apply_checkers_move(cs.board, dest_moves[0])
+                        cs.turn      = CK_B if cs.turn == CK_W else CK_W
+                        cs.selected  = None; cs.valid_moves = []
+                        nxt = ck_all_moves(cs.board, cs.turn)
+                        if not nxt:
+                            cs.game_over = True
+                            cs.winner    = CK_W if cs.turn == CK_B else CK_B
+                    elif ck_color(cs.board[r2][c2]) == cs.turn:
+                        all_m2  = ck_all_moves(cs.board, cs.turn)
+                        piece_m = [m for m in all_m2 if m[0] == (r2, c2)]
+                        cs.selected    = (r2, c2) if piece_m else None
+                        cs.valid_moves = piece_m if piece_m else []
+                    else:
+                        cs.selected = None; cs.valid_moves = []
+                else:
+                    if ck_color(cs.board[r2][c2]) == cs.turn:
+                        all_m2  = ck_all_moves(cs.board, cs.turn)
+                        piece_m = [m for m in all_m2 if m[0] == (r2, c2)]
+                        if piece_m:
+                            cs.selected    = (r2, c2)
+                            cs.valid_moves = piece_m
+
+        screen.fill(BG_APP)
+        draw_checkers_board(screen, cs, flip)
+        draw_checkers_sidebar(screen, cs)
+
+        pygame.display.flip()
+        clock.tick(60)
+
+
+# ── Game-type select ───────────────────────────────────────────────────────────
+
+def game_type_screen():
+    """Returns 'chess' or 'checkers'."""
+    clk = pygame.time.Clock()
+    BTN_W, BTN_H = 260, 70
+    while True:
+        cx = WINDOW_W // 2
+        screen.fill(BG_APP)
+        title = FONTS["xl"].render("Pick a game", True, WHITE_TEXT)
+        screen.blit(title, title.get_rect(center=(cx, WINDOW_H//2 - 110)))
+        chess_r   = pygame.Rect(cx - BTN_W//2, WINDOW_H//2 - 20, BTN_W, BTN_H)
+        checker_r = pygame.Rect(cx - BTN_W//2, WINDOW_H//2 + 70, BTN_W, BTN_H)
+        mouse = pygame.mouse.get_pos()
+        for rect, label in ((chess_r, "Chess"), (checker_r, "Checkers")):
+            hover = rect.collidepoint(mouse)
+            pygame.draw.rect(screen, ORANGE if hover else (35,35,35), rect, border_radius=10)
+            pygame.draw.rect(screen, ORANGE, rect, 2, border_radius=10)
+            t = FONTS["lg"].render(label, True, (10,10,10) if hover else WHITE_TEXT)
+            screen.blit(t, t.get_rect(center=rect.center))
+        pygame.display.flip()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(ev)
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if chess_r.collidepoint(ev.pos):   return "chess"
+                if checker_r.collidepoint(ev.pos): return "checkers"
+        clk.tick(30)
+
+
 # ── Entry points ───────────────────────────────────────────────────────────────
 
 def _net_waiting_screen(status):
@@ -1668,6 +2005,8 @@ def _time_select_screen():
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
+            if ev.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(ev)
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 for i, r in enumerate(rects):
                     if r.collidepoint(ev.pos):
@@ -1710,6 +2049,8 @@ def main_menu():
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
                 pygame.quit(); sys.exit()
+            if ev.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(ev)
             if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
                 if local_rect.collidepoint(ev.pos):
                     t_secs, t_inc = _time_select_screen()
@@ -1886,8 +2227,9 @@ def run_join(host_ip, port):
 
 if __name__ == "__main__":
     pygame.init()
-    screen = pygame.display.set_mode((WINDOW_W, WINDOW_H))
+    screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
     pygame.display.set_caption("Chess")
+    update_layout(WINDOW_W, WINDOW_H)
     init_fonts()
 
     args = sys.argv[1:]
@@ -1901,6 +2243,14 @@ if __name__ == "__main__":
             run_join(args[1], int(args[2]) if len(args) > 2 else DEFAULT_PORT)
     else:
         while True:
+            game_type = game_type_screen()
+            if game_type == "checkers":
+                while True:
+                    cs2 = CheckersState()
+                    result = _checkers_loop(cs2)
+                    if result not in ("again",): break
+                continue
+            # Chess
             mode, param, t_secs, t_inc = main_menu()
             if mode == "local":
                 run_local(time_secs=t_secs, increment_secs=t_inc)

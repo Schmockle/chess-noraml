@@ -11,6 +11,17 @@ import sys, os, copy, math, threading, queue, socket, json, random, hashlib
 
 # ── Admin auth ─────────────────────────────────────────────────────────────────
 ADMIN_HASH = "5931ffd86d51079992e7ed4ebe2ce0779d9843578281431834a5e742deb041eb"
+
+
+def _is_admin():
+    try:
+        import ctypes
+        return bool(ctypes.windll.shell32.IsUserAnAdmin())
+    except AttributeError:
+        try:
+            return os.getuid() == 0
+        except AttributeError:
+            return False
 import pygame
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -2017,6 +2028,142 @@ def _time_select_screen():
         clk.tick(30)
 
 
+def _queue_waiting_screen(status):
+    """Queue lobby screen. Shows players in queue and their admin status. ESC to cancel."""
+    clock = pygame.time.Clock()
+    cx = WINDOW_W // 2
+    dots = 0; dot_timer = 0
+    while not status.get("connected") and not status.get("error") and not status.get("cancelled"):
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                status["cancelled"] = True; return
+            if ev.type == pygame.KEYDOWN and ev.key == pygame.K_ESCAPE:
+                status["cancelled"] = True; return
+            if ev.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(ev)
+        screen.fill(BG_APP)
+        title = FONTS["xl"].render("Quick Match", True, WHITE_TEXT)
+        screen.blit(title, title.get_rect(center=(cx, 90)))
+        lbl = (status.get("label", "Searching") + "." * (dots + 1))
+        s = FONTS["md"].render(lbl, True, ORANGE)
+        screen.blit(s, s.get_rect(center=(cx, 140)))
+        q = status.get("queue", [])
+        if q:
+            hdr = FONTS["sm"].render(f"Players in queue: {len(q)}", True, GREY_TEXT)
+            screen.blit(hdr, hdr.get_rect(center=(cx, 190)))
+            for i, player in enumerate(q):
+                y = 222 + i * 38
+                pname    = player.get("name", "Unknown")
+                is_adm   = player.get("is_admin", False)
+                wait     = player.get("wait", 0)
+                adm_tag  = "  [ADMIN]" if is_adm else ""
+                color    = (255, 200, 50) if is_adm else WHITE_TEXT
+                row      = f"{pname}{adm_tag}   {wait}s"
+                rs = FONTS["md"].render(row, True, color)
+                screen.blit(rs, rs.get_rect(center=(cx, y)))
+        else:
+            empty = FONTS["sm"].render("No other players yet...", True, GREY_TEXT)
+            screen.blit(empty, empty.get_rect(center=(cx, 210)))
+        esc = FONTS["sm"].render("ESC  — cancel", True, GREY_TEXT)
+        screen.blit(esc, esc.get_rect(center=(cx, WINDOW_H - 40)))
+        dot_timer += clock.get_time()
+        if dot_timer >= 500:
+            dots = (dots + 1) % 3; dot_timer = 0
+        pygame.display.flip()
+        clock.tick(30)
+
+
+def run_queue():
+    global _save
+    _save = load_save()
+    apply_theme(_save)
+
+    t_secs, t_inc = _time_select_screen()
+
+    status = {
+        "label": "Connecting to server",
+        "connected": False, "error": None, "cancelled": False,
+        "_conn": None, "role": None, "queue": [],
+    }
+    pname  = os.environ.get("USERNAME", os.environ.get("USER", "Player"))
+    is_adm = _is_admin()
+
+    def _do_queue():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((RELAY_HOST, RELAY_PORT))
+            sock.sendall(json.dumps({"action": "queue", "name": pname, "is_admin": is_adm}).encode() + b"\n")
+            resp, buf = _readline_sock(sock)
+            if "error" in resp:
+                status["error"] = resp["error"]; return
+            status["label"] = "Searching for opponent"
+            remaining = buf
+            sock.settimeout(0.5)
+            while not status["cancelled"]:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        status["error"] = "Disconnected from server"; return
+                    remaining += chunk
+                except socket.timeout:
+                    pass
+                while b"\n" in remaining:
+                    line, remaining = remaining.split(b"\n", 1)
+                    try:
+                        msg = json.loads(line)
+                    except Exception:
+                        continue
+                    if "queue" in msg:
+                        status["queue"] = msg["queue"]
+                    if msg.get("matched"):
+                        sock.settimeout(None)
+                        conn = Connection(sock)
+                        conn.buf = remaining
+                        status["role"]      = msg["role"]
+                        status["_conn"]     = conn
+                        status["connected"] = True
+                        return
+        except Exception as e:
+            if not status["cancelled"]:
+                status["error"] = str(e)
+
+    threading.Thread(target=_do_queue, daemon=True).start()
+    _queue_waiting_screen(status)
+
+    if status["cancelled"] or not status.get("connected"):
+        if status.get("error"):
+            _show_net_error(f"Queue error: {status['error']}")
+        return
+
+    conn = status["_conn"]
+    role = status["role"]
+
+    if role == "host":
+        my_color  = random.choice([W, B])
+        opp_color = B if my_color == W else W
+        conn.send({"type": "color", "color": opp_color,
+                   "time_secs": t_secs, "increment_secs": t_inc})
+        opp_theme_data, opp_skin_data = _theme_handshake_host(conn)
+        gs      = GameState()
+        tracker = AccuracyTracker(StockfishAnalyzer())
+        _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
+                     opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data,
+                     time_secs=t_secs, increment_secs=t_inc)
+        tracker.stop(); conn.close()
+    else:
+        color_msg = conn.recv()
+        my_color  = color_msg["color"]
+        sv_secs   = color_msg.get("time_secs")
+        sv_inc    = color_msg.get("increment_secs", 0)
+        opp_theme_data, opp_skin_data = _theme_handshake_join(conn)
+        gs      = GameState()
+        tracker = AccuracyTracker(StockfishAnalyzer())
+        _pygame_loop(gs, tracker, conn=conn, my_color=my_color, save=_save,
+                     opp_theme_data=opp_theme_data, opp_skin_data=opp_skin_data,
+                     time_secs=sv_secs, increment_secs=sv_inc)
+        tracker.stop(); conn.close()
+
+
 def main_menu():
     """Mode-select → time-select. Returns (mode, param, time_secs, increment_secs)."""
     clk = pygame.time.Clock()
@@ -2028,23 +2175,25 @@ def main_menu():
         screen.fill(BG_APP)
         title = FONTS["xl"].render("Chess", True, WHITE_TEXT)
         screen.blit(title, title.get_rect(center=(cx, 130)))
-        local_rect = pygame.Rect(cx - BTN_W // 2, 220, BTN_W, BTN_H)
-        host_rect  = pygame.Rect(cx - BTN_W // 2, 296, BTN_W, BTN_H)
-        join_rect  = pygame.Rect(cx - BTN_W // 2, 372, BTN_W, BTN_H)
-        for rect, label in [(local_rect, "Local"), (host_rect, "Host (online)"), (join_rect, "Join (online)")]:
+        local_rect = pygame.Rect(cx - BTN_W // 2, 190, BTN_W, BTN_H)
+        host_rect  = pygame.Rect(cx - BTN_W // 2, 258, BTN_W, BTN_H)
+        join_rect  = pygame.Rect(cx - BTN_W // 2, 326, BTN_W, BTN_H)
+        queue_rect = pygame.Rect(cx - BTN_W // 2, 394, BTN_W, BTN_H)
+        for rect, label in [(local_rect, "Local"), (host_rect, "Host (online)"),
+                            (join_rect, "Join (online)"), (queue_rect, "Quick Match")]:
             pygame.draw.rect(screen, (35, 35, 35), rect, border_radius=8)
             pygame.draw.rect(screen, ORANGE, rect, 2, border_radius=8)
             t = FONTS["lg"].render(label, True, WHITE_TEXT)
             screen.blit(t, t.get_rect(center=rect.center))
         if join_mode:
-            box = pygame.Rect(cx - 110, 460, 220, 52)
+            box = pygame.Rect(cx - 110, 476, 220, 52)
             pygame.draw.rect(screen, (28, 28, 28), box, border_radius=8)
             pygame.draw.rect(screen, ORANGE, box, 2, border_radius=8)
             display_code = join_code if join_code else "    "
             cs = FONTS["xl"].render(display_code, True, WHITE_TEXT if join_code else GREY_TEXT)
             screen.blit(cs, cs.get_rect(center=box.center))
             hint = FONTS["sm"].render("Type 4-digit room code, press Enter", True, GREY_TEXT)
-            screen.blit(hint, hint.get_rect(center=(cx, 530)))
+            screen.blit(hint, hint.get_rect(center=(cx, 546)))
         pygame.display.flip()
         for ev in pygame.event.get():
             if ev.type == pygame.QUIT:
@@ -2060,6 +2209,8 @@ def main_menu():
                     return "host", None, t_secs, t_inc
                 if join_rect.collidepoint(ev.pos):
                     join_mode = True; join_code = ""
+                if queue_rect.collidepoint(ev.pos):
+                    return "queue", None, None, 0
             if join_mode and ev.type == pygame.KEYDOWN:
                 if ev.key == pygame.K_RETURN and len(join_code) == 4:
                     return "join", join_code, None, 0  # joiner gets time from host
@@ -2258,5 +2409,7 @@ if __name__ == "__main__":
                 run_host(DEFAULT_PORT, time_secs=t_secs, increment_secs=t_inc)
             elif mode == "join":
                 run_join(param, DEFAULT_PORT)
+            elif mode == "queue":
+                run_queue()
 
     pygame.quit()

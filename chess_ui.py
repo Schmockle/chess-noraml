@@ -12,6 +12,17 @@ import sys, os, copy, math, threading, queue, socket, json, random, hashlib
 # ── Admin auth ─────────────────────────────────────────────────────────────────
 ADMIN_HASH = "5931ffd86d51079992e7ed4ebe2ce0779d9843578281431834a5e742deb041eb"
 
+# ── Code version (anti-cheat) ──────────────────────────────────────────────────
+def _compute_code_version():
+    try:
+        target = sys.executable if getattr(sys, 'frozen', False) else os.path.abspath(__file__)
+        with open(target, 'rb') as _f:
+            return hashlib.sha256(_f.read()).hexdigest()[:16]
+    except Exception:
+        return "unknown"
+
+CODE_VERSION = _compute_code_version()
+
 
 def _is_admin():
     try:
@@ -2634,6 +2645,8 @@ def run_queue():
     role = status["role"]
 
     if role == "host":
+        if not _version_handshake_host(conn):
+            _show_net_error("Version mismatch — opponent has different game files."); conn.close(); return
         my_color  = random.choice([W, B])
         opp_color = B if my_color == W else W
         conn.send({"type": "color", "color": opp_color,
@@ -2646,6 +2659,8 @@ def run_queue():
                      time_secs=t_secs, increment_secs=t_inc)
         tracker.stop(); conn.close()
     else:
+        if not _version_handshake_join(conn):
+            _show_net_error("Version mismatch — host has different game files."); conn.close(); return
         color_msg = conn.recv()
         my_color  = color_msg["color"]
         sv_secs   = color_msg.get("time_secs")
@@ -2763,6 +2778,26 @@ def _readline_sock(sock):
     return json.loads(line), rest
 
 
+def _version_handshake_host(conn):
+    """Host sends version first. Returns True if both sides match."""
+    try:
+        conn.send({"type": "version", "v": CODE_VERSION})
+        data = conn.recv()
+        return data.get("v") == CODE_VERSION
+    except Exception:
+        return False
+
+
+def _version_handshake_join(conn):
+    """Join receives host version first, then sends own. Returns True if both match."""
+    try:
+        data = conn.recv()
+        conn.send({"type": "version", "v": CODE_VERSION})
+        return data.get("v") == CODE_VERSION
+    except Exception:
+        return False
+
+
 def run_host(port, time_secs=None, increment_secs=0):
     global _save
     _save = load_save()
@@ -2811,6 +2846,8 @@ def run_host(port, time_secs=None, increment_secs=0):
         _show_net_error(f"Error: {status['error']}"); return
 
     conn = status["_conn"]
+    if not _version_handshake_host(conn):
+        _show_net_error("Version mismatch — opponent has different game files."); conn.close(); return
     my_color  = random.choice([W, B])
     opp_color = B if my_color == W else W
     conn.send({"type": "color", "color": opp_color,
@@ -2858,6 +2895,8 @@ def run_join(host_ip, port):
         _show_net_error(f"Error: {status['error']}"); return
 
     conn = status["_conn"]
+    if not _version_handshake_join(conn):
+        _show_net_error("Version mismatch — you have different game files than the host."); conn.close(); return
     color_msg   = conn.recv()
     my_color    = color_msg["color"]
     time_secs   = color_msg.get("time_secs")
@@ -2986,6 +3025,8 @@ def run_checkers_host(port):
         _show_net_error(f"Error: {status['error']}"); return
 
     conn      = status["_conn"]
+    if not _version_handshake_host(conn):
+        _show_net_error("Version mismatch — opponent has different game files."); conn.close(); return
     my_color  = random.choice([CK_W, CK_B])
     opp_color = CK_B if my_color == CK_W else CK_W
     conn.send({"type": "color", "color": opp_color})
@@ -3029,6 +3070,8 @@ def run_checkers_join(host_ip, port):
         _show_net_error(f"Error: {status['error']}"); return
 
     conn     = status["_conn"]
+    if not _version_handshake_join(conn):
+        _show_net_error("Version mismatch — you have different game files than the host."); conn.close(); return
     color_msg = conn.recv()
     my_color  = color_msg["color"]
     cs2 = CheckersState()
@@ -3097,10 +3140,14 @@ def run_checkers_queue():
 
     conn = status["_conn"]
     if status["role"] == "host":
+        if not _version_handshake_host(conn):
+            _show_net_error("Version mismatch — opponent has different game files."); conn.close(); return
         my_color  = random.choice([CK_W, CK_B])
         opp_color = CK_B if my_color == CK_W else CK_W
         conn.send({"type": "color", "color": opp_color})
     else:
+        if not _version_handshake_join(conn):
+            _show_net_error("Version mismatch — host has different game files."); conn.close(); return
         color_msg = conn.recv()
         my_color  = color_msg["color"]
 

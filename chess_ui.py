@@ -535,24 +535,32 @@ def do_move(gs: GameState, fr, fc, tr, tc, tracker, conn=None, promo="Q"):
         gs.castling[gs.turn+"K"] = gs.castling[gs.turn+"Q"] = False
         gs.en_passant = None
         gs.last_move = [(fr, fc), (tr, tc)]
-        label = "O-O" if side == "k" else "O-O-O"
-        if conn: conn.send({"type": "castle", "side": side})
+        label   = "O-O" if side == "k" else "O-O-O"
+        out_msg = {"type": "castle", "side": side}
     else:
         is_capture = gs.board[tr][tc] != EMPTY or (
             piece[1] == "P" and fc != tc and gs.board[tr][tc] == EMPTY  # en passant
         )
         gs.board, gs.en_passant = apply_move(gs.board, fr, fc, tr, tc, gs.en_passant, promo)
         gs.last_move = [(fr, fc), (tr, tc)]
-        pname = {"P": "", "R": "R", "N": "N", "B": "B", "Q": "Q", "K": "K"}[piece[1]]
-        sep   = "×" if is_capture else "→"
-        label = f"{pname}{_sq_name(fr,fc)}{sep}{_sq_name(tr,tc)}"
+        pname   = {"P": "", "R": "R", "N": "N", "B": "B", "Q": "Q", "K": "K"}[piece[1]]
+        sep     = "×" if is_capture else "→"
+        label   = f"{pname}{_sq_name(fr,fc)}{sep}{_sq_name(tr,tc)}"
         if promo != "Q" and piece[1] == "P": label += f"={promo}"
-        if conn: conn.send({"type":"move","from_r":fr,"from_c":fc,
-                             "to_r":tr,"to_c":tc,"promotion":promo})
+        out_msg = {"type": "move", "from_r": fr, "from_c": fc,
+                   "to_r": tr, "to_c": tc, "promotion": promo}
 
     _update_castling(gs)
     fen_after = board_to_fen(gs.board, gs.turn, gs.castling, gs.en_passant)
     _record_and_advance(gs, tracker, fen_before, fen_after, label, piece=piece)
+
+    # Send AFTER state is fully committed so the hash matches the receiver's state
+    if conn:
+        out_msg["hash"] = hashlib.sha256(
+            board_to_fen(gs.board, gs.turn, gs.castling, gs.en_passant).encode()
+        ).hexdigest()[:16]
+        conn.send(out_msg)
+
     return _check_end(gs)
 
 
@@ -1071,6 +1079,18 @@ def draw_chat_panel(surf, messages, input_text, focused):
     return inp
 
 
+# ── Anti-cheat banner ─────────────────────────────────────────────────────────
+
+def _draw_cheat_banner(surf):
+    panel = pygame.Rect(WINDOW_W // 2 - 260, WINDOW_H // 2 - 60, 520, 120)
+    pygame.draw.rect(surf, (30, 0, 0), panel, border_radius=10)
+    pygame.draw.rect(surf, (200, 30, 30), panel, 2, border_radius=10)
+    t1 = FONTS["xl"].render("⚠  CHEAT DETECTED", True, (220, 50, 50))
+    t2 = FONTS["sm"].render("State mismatch — opponent's client is modified. You win.", True, (180, 180, 180))
+    surf.blit(t1, t1.get_rect(centerx=panel.centerx, y=panel.y + 14))
+    surf.blit(t2, t2.get_rect(centerx=panel.centerx, y=panel.y + 76))
+
+
 # ── Main loop ──────────────────────────────────────────────────────────────────
 
 def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
@@ -1089,6 +1109,7 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
     view_idx        = 0
     loss_ticks      = None
     loss_fired      = False
+    cheat_detected  = False
     shop_open       = False
     shop_tab        = "boards"
     scroll_shop     = 0
@@ -1133,6 +1154,15 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                     elif data["type"] in ("move", "castle"):
                         opp_turn = gs.turn
                         apply_opponent_move(gs, data, tracker)
+                        if "hash" in data:
+                            local_h = hashlib.sha256(
+                                board_to_fen(gs.board, gs.turn, gs.castling, gs.en_passant).encode()
+                            ).hexdigest()[:16]
+                            if data["hash"] != local_h:
+                                cheat_detected = True
+                                gs.game_over   = True
+                                gs.winner      = my_color
+                                gs.result      = "white_wins" if my_color == W else "black_wins"
                         scroll    = max(0, len(gs.move_history) // 2 * 22 - 250)
                         reviewing = False
                         arrows.clear(); sq_highlights.clear()
@@ -1612,6 +1642,9 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
             screen.blit(bg, (r.x - 12, r.y - 8))
             screen.blit(surf, r)
 
+        if cheat_detected and not reviewing:
+            _draw_cheat_banner(screen)
+
         pygame.display.flip()
         clock.tick(60)
 
@@ -1974,11 +2007,12 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
 
     clock              = pygame.time.Clock()
     flip_manual        = False
-    flip               = (my_color == CK_B)   # default: show your pieces at bottom
+    flip               = (my_color == CK_B)
     scroll             = 0
     gold_awarded       = False
     loss_ticks         = None
     loss_fired         = False
+    cheat_detected     = False
     shop_open          = False
     shop_tab           = "boards"
     scroll_shop        = 0
@@ -2026,8 +2060,17 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
                         cs.selected  = None; cs.valid_moves = []
                         scroll       = max(0, len(cs.move_history) // 2 * 18 - 180)
                         arrows.clear(); sq_highlights.clear()
+                        if "hash" in data:
+                            local_h = hashlib.sha256((
+                                str([[cs.board[r][c] for c in range(8)] for r in range(8)])
+                                + cs.turn).encode()).hexdigest()[:16]
+                            if data["hash"] != local_h:
+                                cheat_detected = True
+                                cs.game_over   = True
+                                cs.winner      = my_color
+                                cs.result      = "white_wins" if my_color == CK_W else "black_wins"
                         nxt = ck_all_moves(cs.board, cs.turn)
-                        if not nxt:
+                        if not nxt and not cs.game_over:
                             cs.game_over = True
                             cs.winner    = CK_W if cs.turn == CK_B else CK_B
                             cs.result    = "white_wins" if cs.winner == CK_W else "black_wins"
@@ -2242,16 +2285,20 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
                         if cs.turn == CK_B:
                             cs.move_num += 1
 
-                        if conn:
-                            try: conn.send({"type": "ck_move",
-                                            "path": [[r, c] for r, c in move]})
-                            except: pass
-
                         cs.last_move = move
                         cs.board     = apply_checkers_move(cs.board, move)
                         cs.turn      = CK_B if cs.turn == CK_W else CK_W
                         cs.selected  = None; cs.valid_moves = []
                         scroll       = max(0, len(cs.move_history) // 2 * 18 - 180)
+
+                        if conn:
+                            ck_h = hashlib.sha256((
+                                str([[cs.board[r][c] for c in range(8)] for r in range(8)])
+                                + cs.turn).encode()).hexdigest()[:16]
+                            try: conn.send({"type": "ck_move",
+                                            "path": [[r, c] for r, c in move],
+                                            "hash": ck_h})
+                            except: pass
                         nxt = ck_all_moves(cs.board, cs.turn)
                         if not nxt:
                             cs.game_over = True
@@ -2334,6 +2381,9 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
 
         if cs.game_over and not reviewing:
             draw_checkers_game_over(screen, cs)
+
+        if cheat_detected and not reviewing:
+            _draw_cheat_banner(screen)
 
         if admin_overlay_open:
             draw_admin_overlay(screen, admin_input_text, admin_input_error)

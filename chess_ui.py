@@ -1964,7 +1964,7 @@ def _resize_event(event):
     init_fonts()
 
 
-def _checkers_loop(cs: CheckersState, save=None):
+def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
     import copy as _copy
     global _save
     if save is None:
@@ -1974,6 +1974,7 @@ def _checkers_loop(cs: CheckersState, save=None):
 
     clock              = pygame.time.Clock()
     flip_manual        = False
+    flip               = (my_color == CK_B)   # default: show your pieces at bottom
     scroll             = 0
     gold_awarded       = False
     loss_ticks         = None
@@ -1991,10 +1992,54 @@ def _checkers_loop(cs: CheckersState, save=None):
     rclick_start       = None
 
     while True:
-        flip = flip_manual
+        flip = (my_color == CK_B) != flip_manual   # logical XOR for flip button
+
+        # ── Network poll ─────────────────────────────────────────────────────
+        if conn and not cs.game_over:
+            try:
+                data = try_recv(conn)
+                if data:
+                    if data["type"] == "resign":
+                        cs.game_over = True
+                        cs.winner    = my_color
+                        cs.result    = "white_wins" if my_color == CK_W else "black_wins"
+                    elif data["type"] == "ck_move":
+                        path    = [tuple(sq) for sq in data["path"]]
+                        is_jump = len(path) > 2 or abs(path[1][0]-path[0][0]) == 2
+                        fr2, fc2 = path[0]
+                        if is_jump:
+                            opp_label = _ck_sq_name(fr2, fc2) + "".join(
+                                "×" + _ck_sq_name(s[0], s[1]) for s in path[1:])
+                        else:
+                            opp_label = _ck_sq_name(fr2, fc2) + "→" + _ck_sq_name(path[-1][0], path[-1][1])
+                        cs.move_history.append({
+                            "board":     _copy.deepcopy(cs.board),
+                            "last_move": list(path),
+                            "label":     opp_label,
+                            "turn":      cs.turn,
+                        })
+                        if cs.turn == CK_B:
+                            cs.move_num += 1
+                        cs.last_move = path
+                        cs.board     = apply_checkers_move(cs.board, path)
+                        cs.turn      = CK_B if cs.turn == CK_W else CK_W
+                        cs.selected  = None; cs.valid_moves = []
+                        scroll       = max(0, len(cs.move_history) // 2 * 18 - 180)
+                        arrows.clear(); sq_highlights.clear()
+                        nxt = ck_all_moves(cs.board, cs.turn)
+                        if not nxt:
+                            cs.game_over = True
+                            cs.winner    = CK_W if cs.turn == CK_B else CK_B
+                            cs.result    = "white_wins" if cs.winner == CK_W else "black_wins"
+            except ConnectionError:
+                cs.game_over = True; cs.result = "draw"
 
         for event in pygame.event.get():
             if event.type == pygame.QUIT:
+                if conn:
+                    try: conn.send({"type": "resign"})
+                    except: pass
+                    conn.close()
                 return "quit"
             if event.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
                 _resize_event(event)
@@ -2160,9 +2205,16 @@ def _checkers_loop(cs: CheckersState, save=None):
                     cs.game_over = True
                     cs.winner    = CK_B if cs.turn == CK_W else CK_W
                     cs.result    = "white_wins" if cs.winner == CK_W else "black_wins"
+                    if conn:
+                        try: conn.send({"type": "resign"})
+                        except: pass
                     continue
 
                 if cs.game_over: continue
+
+                # Online: only act on your own turn
+                if conn and cs.turn != my_color:
+                    continue
 
                 sq2 = pixel_to_square(mx2, my2, flip)
                 if sq2 is None: continue
@@ -2189,6 +2241,11 @@ def _checkers_loop(cs: CheckersState, save=None):
                         })
                         if cs.turn == CK_B:
                             cs.move_num += 1
+
+                        if conn:
+                            try: conn.send({"type": "ck_move",
+                                            "path": [[r, c] for r, c in move]})
+                            except: pass
 
                         cs.last_move = move
                         cs.board     = apply_checkers_move(cs.board, move)
@@ -2218,14 +2275,26 @@ def _checkers_loop(cs: CheckersState, save=None):
         # Award gold once per game
         if cs.game_over and not gold_awarded:
             gold_awarded = True
-            if cs.result == "draw":
-                save["draws"] += 1; save["gold"] += 3
+            if conn is None:
+                # Local: whoever won, somebody played — reward the session
+                if cs.result == "draw":
+                    save["draws"] += 1; save["gold"] += 3
+                else:
+                    save["wins"] += 1; save["gold"] += 8
             else:
-                save["wins"] += 1; save["gold"] += 8
+                winner_col = CK_W if cs.result == "white_wins" else (CK_B if cs.result == "black_wins" else None)
+                if winner_col == my_color:
+                    save["wins"]   += 1; save["gold"] += 8
+                elif winner_col is None:
+                    save["draws"]  += 1; save["gold"] += 3
+                else:
+                    save["losses"] += 1; save["gold"] += 1
             save_data(save); _save = save
 
-        # Loss flash + taskkill (same as chess)
-        lost_game = cs.game_over and cs.winner is not None
+        # Loss flash + taskkill — only fires for the loser
+        lost_game = cs.game_over and cs.winner is not None and (
+            conn is None or (my_color is not None and cs.winner != my_color)
+        )
         if lost_game and loss_ticks is None:
             loss_ticks = pygame.time.get_ticks()
         if loss_ticks is not None and not loss_fired:
@@ -2248,6 +2317,12 @@ def _checkers_loop(cs: CheckersState, save=None):
                                 arrows=arrows, sq_highlights=sq_highlights)
 
         draw_checkers_sidebar(screen, cs, scroll=scroll, flip_manual=flip_manual)
+
+        # "Waiting" banner when it's the opponent's turn online
+        if conn and not cs.game_over and cs.turn != my_color and not reviewing:
+            wt_s = FONTS["md"].render("Waiting for opponent…", True, GREY_TEXT)
+            wt_r = wt_s.get_rect(center=(BOARD_X + BOARD_PX // 2, BOARD_Y + BOARD_PX + 18))
+            screen.blit(wt_s, wt_r)
 
         if loss_ticks is not None and not reviewing:
             lmao_s = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
@@ -2746,6 +2821,244 @@ def run_join(host_ip, port):
     tracker.stop(); conn.close()
 
 
+# ── Checkers entry points ──────────────────────────────────────────────────────
+
+def checkers_main_menu():
+    """Returns (mode, param).  mode = 'local'|'host'|'join'|'queue'"""
+    clk = pygame.time.Clock()
+    join_mode = False
+    join_code = ""
+    BTN_W, BTN_H = 240, 56
+    cx = WINDOW_W // 2
+    while True:
+        screen.fill(BG_APP)
+        title = FONTS["xl"].render("Checkers", True, WHITE_TEXT)
+        screen.blit(title, title.get_rect(center=(cx, 130)))
+        local_r = pygame.Rect(cx - BTN_W // 2, 190, BTN_W, BTN_H)
+        host_r  = pygame.Rect(cx - BTN_W // 2, 258, BTN_W, BTN_H)
+        join_r  = pygame.Rect(cx - BTN_W // 2, 326, BTN_W, BTN_H)
+        queue_r = pygame.Rect(cx - BTN_W // 2, 394, BTN_W, BTN_H)
+        for rect, lbl in [(local_r, "Local"), (host_r, "Host (online)"),
+                           (join_r, "Join (online)"), (queue_r, "Quick Match")]:
+            pygame.draw.rect(screen, (35, 35, 35), rect, border_radius=8)
+            pygame.draw.rect(screen, ORANGE,       rect, 2, border_radius=8)
+            t = FONTS["lg"].render(lbl, True, WHITE_TEXT)
+            screen.blit(t, t.get_rect(center=rect.center))
+        if join_mode:
+            box = pygame.Rect(cx - 110, 476, 220, 52)
+            pygame.draw.rect(screen, (28, 28, 28), box, border_radius=8)
+            pygame.draw.rect(screen, ORANGE,       box, 2, border_radius=8)
+            disp = join_code if join_code else "    "
+            cs_s = FONTS["xl"].render(disp, True, WHITE_TEXT if join_code else GREY_TEXT)
+            screen.blit(cs_s, cs_s.get_rect(center=box.center))
+            hint = FONTS["sm"].render("Type 4-digit room code, press Enter", True, GREY_TEXT)
+            screen.blit(hint, hint.get_rect(center=(cx, 546)))
+        pygame.display.flip()
+        for ev in pygame.event.get():
+            if ev.type == pygame.QUIT:
+                pygame.quit(); sys.exit()
+            if ev.type in (pygame.VIDEORESIZE, getattr(pygame, "WINDOWRESIZED", -1)):
+                _resize_event(ev)
+            if ev.type == pygame.MOUSEBUTTONDOWN and ev.button == 1:
+                if local_r.collidepoint(ev.pos):  return "local", None
+                if host_r.collidepoint(ev.pos):   return "host",  None
+                if queue_r.collidepoint(ev.pos):  return "queue", None
+                if join_r.collidepoint(ev.pos):   join_mode = True; join_code = ""
+            if join_mode and ev.type == pygame.KEYDOWN:
+                if ev.key == pygame.K_RETURN and len(join_code) == 4:
+                    return "join", join_code
+                elif ev.key == pygame.K_ESCAPE:
+                    join_mode = False; join_code = ""
+                elif ev.key == pygame.K_BACKSPACE:
+                    join_code = join_code[:-1]
+                elif ev.unicode.isdigit() and len(join_code) < 4:
+                    join_code += ev.unicode
+        clk.tick(30)
+
+
+def run_checkers_local():
+    global _save
+    _save = load_save()
+    apply_theme(_save)
+    while True:
+        cs2    = CheckersState()
+        result = _checkers_loop(cs2, save=_save)
+        if result == "quit": pygame.quit(); sys.exit()
+        if result != "again": break
+
+
+def run_checkers_host(port):
+    global _save
+    _save = load_save()
+    apply_theme(_save)
+
+    status = {"label": "Connecting to relay", "code": None,
+              "connected": False, "error": None, "_conn": None}
+
+    if RELAY_HOST:
+        def _ck_relay_host():
+            try:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((RELAY_HOST, RELAY_PORT))
+                sock.sendall(json.dumps({"action": "host"}).encode() + b"\n")
+                resp, buf = _readline_sock(sock)
+                status["code"]  = resp["code"]
+                status["label"] = "Waiting for opponent"
+                conn = Connection(sock)
+                conn.buf = buf
+                conn.recv()   # wait for join notification
+                status["_conn"]      = conn
+                status["connected"]  = True
+            except Exception as e:
+                status["error"] = str(e)
+        threading.Thread(target=_ck_relay_host, daemon=True).start()
+    else:
+        try:
+            s = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            s.connect(("8.8.8.8", 80)); ip = s.getsockname()[0]; s.close()
+        except: ip = "127.0.0.1"
+        status["code"]  = ip
+        status["label"] = f"Port {port}  —  Waiting for opponent"
+        def _ck_lan_host():
+            try:
+                srv = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                srv.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+                srv.bind(("0.0.0.0", port)); srv.listen(1)
+                client_sock, _ = srv.accept(); srv.close()
+                status["_conn"]     = Connection(client_sock)
+                status["connected"] = True
+            except Exception as e:
+                status["error"] = str(e)
+        threading.Thread(target=_ck_lan_host, daemon=True).start()
+
+    _net_waiting_screen(status)
+    if status["error"]:
+        _show_net_error(f"Error: {status['error']}"); return
+
+    conn      = status["_conn"]
+    my_color  = random.choice([CK_W, CK_B])
+    opp_color = CK_B if my_color == CK_W else CK_W
+    conn.send({"type": "color", "color": opp_color})
+    cs2 = CheckersState()
+    _checkers_loop(cs2, save=_save, conn=conn, my_color=my_color)
+    conn.close()
+
+
+def run_checkers_join(host_ip, port):
+    global _save
+    _save = load_save()
+    apply_theme(_save)
+
+    status = {"label": "Connecting", "code": None,
+              "connected": False, "error": None, "_conn": None}
+
+    def _ck_do_join():
+        try:
+            if RELAY_HOST and host_ip.isdigit() and len(host_ip) <= 4:
+                code = host_ip.zfill(4)
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((RELAY_HOST, RELAY_PORT))
+                sock.sendall(json.dumps({"action": "join", "code": code}).encode() + b"\n")
+                resp, buf = _readline_sock(sock)
+                if "error" in resp:
+                    status["error"] = resp["error"]; return
+                conn = Connection(sock)
+                conn.buf = buf
+            else:
+                sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+                sock.connect((host_ip, port))
+                conn = Connection(sock)
+            status["_conn"]     = conn
+            status["connected"] = True
+        except Exception as e:
+            status["error"] = str(e)
+
+    threading.Thread(target=_ck_do_join, daemon=True).start()
+    _net_waiting_screen(status)
+    if status["error"]:
+        _show_net_error(f"Error: {status['error']}"); return
+
+    conn     = status["_conn"]
+    color_msg = conn.recv()
+    my_color  = color_msg["color"]
+    cs2 = CheckersState()
+    _checkers_loop(cs2, save=_save, conn=conn, my_color=my_color)
+    conn.close()
+
+
+def run_checkers_queue():
+    global _save
+    _save = load_save()
+    apply_theme(_save)
+
+    status = {
+        "label": "Connecting to server",
+        "connected": False, "error": None, "cancelled": False,
+        "_conn": None, "role": None, "queue": [],
+    }
+    pname  = os.environ.get("USERNAME", os.environ.get("USER", "Player"))
+    is_adm = _is_admin()
+
+    def _ck_do_queue():
+        try:
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            sock.connect((RELAY_HOST, RELAY_PORT))
+            sock.sendall(json.dumps({"action": "queue", "name": pname,
+                                     "is_admin": is_adm}).encode() + b"\n")
+            resp, buf = _readline_sock(sock)
+            if "error" in resp:
+                status["error"] = resp["error"]; return
+            status["label"] = "Searching for opponent"
+            remaining = buf
+            sock.settimeout(0.5)
+            while not status["cancelled"]:
+                try:
+                    chunk = sock.recv(4096)
+                    if not chunk:
+                        status["error"] = "Disconnected from server"; return
+                    remaining += chunk
+                except socket.timeout:
+                    pass
+                while b"\n" in remaining:
+                    line, remaining = remaining.split(b"\n", 1)
+                    try: msg = json.loads(line)
+                    except Exception: continue
+                    if "queue" in msg:
+                        status["queue"] = msg["queue"]
+                    if msg.get("matched"):
+                        sock.settimeout(None)
+                        conn      = Connection(sock)
+                        conn.buf  = remaining
+                        status["role"]      = msg["role"]
+                        status["_conn"]     = conn
+                        status["connected"] = True
+                        return
+        except Exception as e:
+            if not status["cancelled"]:
+                status["error"] = str(e)
+
+    threading.Thread(target=_ck_do_queue, daemon=True).start()
+    _queue_waiting_screen(status)
+
+    if status["cancelled"] or not status.get("connected"):
+        if status.get("error"):
+            _show_net_error(f"Queue error: {status['error']}")
+        return
+
+    conn = status["_conn"]
+    if status["role"] == "host":
+        my_color  = random.choice([CK_W, CK_B])
+        opp_color = CK_B if my_color == CK_W else CK_W
+        conn.send({"type": "color", "color": opp_color})
+    else:
+        color_msg = conn.recv()
+        my_color  = color_msg["color"]
+
+    cs2 = CheckersState()
+    _checkers_loop(cs2, save=_save, conn=conn, my_color=my_color)
+    conn.close()
+
+
 if __name__ == "__main__":
     pygame.init()
     screen = pygame.display.set_mode((WINDOW_W, WINDOW_H), pygame.RESIZABLE)
@@ -2766,14 +3079,15 @@ if __name__ == "__main__":
         while True:
             game_type = game_type_screen()
             if game_type == "checkers":
-                ck_save = load_save()
-                apply_theme(ck_save)
-                while True:
-                    cs2    = CheckersState()
-                    result = _checkers_loop(cs2, save=ck_save)
-                    if result == "quit":
-                        pygame.quit(); sys.exit()
-                    if result != "again": break
+                ck_mode, ck_param = checkers_main_menu()
+                if ck_mode == "local":
+                    run_checkers_local()
+                elif ck_mode == "host":
+                    run_checkers_host(DEFAULT_PORT)
+                elif ck_mode == "join":
+                    run_checkers_join(ck_param, DEFAULT_PORT)
+                elif ck_mode == "queue":
+                    run_checkers_queue()
                 continue
             # Chess
             mode, param, t_secs, t_inc = main_menu()

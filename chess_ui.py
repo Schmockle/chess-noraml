@@ -180,9 +180,20 @@ PIECE_GLYPHS = {
 PIECE_FG     = {W: (245, 245, 245), B: (190, 115, 35)}   # white vs warm amber
 PIECE_SHADOW = {W: (0, 0, 0),       B: (70,  30,  0)}
 
-FONTS   = {}
-screen  = None  # set in main
-_save   = None  # loaded on startup
+FONTS       = {}
+screen      = None  # set in main
+_save       = None  # loaded on startup
+_surf_cache: dict = {}  # keyed reusable SRCALPHA surfaces
+
+
+def _cached_surf(key: str, w: int, h: int) -> "pygame.Surface":
+    """Return a cached SRCALPHA surface of the right size, cleared each call."""
+    s = _surf_cache.get(key)
+    if s is None or s.get_size() != (w, h):
+        _surf_cache[key] = pygame.Surface((w, h), pygame.SRCALPHA)
+        s = _surf_cache[key]
+    s.fill((0, 0, 0, 0))
+    return s
 
 
 def init_fonts():
@@ -297,8 +308,10 @@ class AccuracyTracker:
         self._q       = queue.Queue()
         self._results = {}
         self._lock    = threading.Lock()
+        self._thread  = None
         if analyzer.available:
-            threading.Thread(target=self._worker, daemon=True).start()
+            self._thread = threading.Thread(target=self._worker, daemon=True)
+            self._thread.start()
 
     def submit(self, idx, fen_before, fen_after, color):
         if self.analyzer.available:
@@ -320,6 +333,10 @@ class AccuracyTracker:
     def stop(self):
         try: self._q.put(None)
         except: pass
+        if self._thread and self._thread.is_alive():
+            self._thread.join(timeout=2.0)
+        with self._lock:
+            self._results.clear()
 
     def _worker(self):
         while True:
@@ -390,8 +407,7 @@ def _draw_arrow_on(surf, sq1, sq2, flip, col=(80, 190, 80)):
 
 def draw_board_overlays(surf, arrows, sq_highlights, flip):
     if not arrows and not sq_highlights: return
-    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
-    ov.fill((0, 0, 0, 0))
+    ov = _cached_surf("board_ov", WINDOW_W, WINDOW_H)
     for sq, col in sq_highlights.items():
         rect = sq_rect(sq[0], sq[1], flip)
         pygame.draw.rect(ov, (*col, 110), rect)
@@ -686,8 +702,7 @@ def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = 
 
     HIST_H   = 222
     ROW_H    = 22
-    hist_buf = pygame.Surface((SIDEBAR_W, HIST_H), pygame.SRCALPHA)
-    hist_buf.fill((0, 0, 0, 0))
+    hist_buf = _cached_surf("sidebar_hist", SIDEBAR_W, HIST_H)
 
     # Build (white_move, black_move) pairs
     pairs = []
@@ -771,7 +786,7 @@ def draw_sidebar(surf, gs: GameState, tracker, scroll: int, flip_manual: bool = 
 # ── Promotion overlay ──────────────────────────────────────────────────────────
 
 def draw_promo_overlay(surf, color):
-    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov = _cached_surf("promo_ov", WINDOW_W, WINDOW_H)
     ov.fill((0, 0, 0, 180)); surf.blit(ov, (0, 0))
     pieces = ["Q", "R", "B", "N"]
     pw, pad = 80, 10
@@ -801,7 +816,7 @@ def _gameover_rects():
     return panel, review, again, quit_
 
 def draw_game_over(surf, gs: GameState, tracker):
-    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov = _cached_surf("gameover_ov", WINDOW_W, WINDOW_H)
     ov.fill((0, 0, 0, 200)); surf.blit(ov, (0, 0))
     panel, review, again, quit_ = _gameover_rects()
     pygame.draw.rect(surf, BG_SIDEBAR, panel, border_radius=12)
@@ -877,7 +892,7 @@ def draw_review_nav(surf, view_idx, total, tracker, back_label="Result"):
 
 def draw_shop(surf, save, tab, scroll_shop):
     """Draw shop overlay. Returns (tab_rects, item_rects, close_rect, max_scroll)."""
-    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov = _cached_surf("shop_ov", WINDOW_W, WINDOW_H)
     ov.fill((0, 0, 0, 210)); surf.blit(ov, (0, 0))
 
     panel = pygame.Rect(60, 30, WINDOW_W - 120, WINDOW_H - 60)
@@ -915,8 +930,7 @@ def draw_shop(surf, save, tab, scroll_shop):
     active_key = save.get("active_theme" if tab == "boards" else "active_skin", "classic")
     owned      = save.get("owned_themes" if tab == "boards" else "owned_skins", [])
 
-    clip = pygame.Surface((panel.w - 4, content_h), pygame.SRCALPHA)
-    clip.fill((0, 0, 0, 0))
+    clip = _cached_surf("shop_clip", panel.w - 4, content_h)
 
     item_rects = {}
     for i, (key, item) in enumerate(items.items()):
@@ -1121,6 +1135,7 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
     loss_ticks      = None
     loss_fired      = False
     cheat_detected  = False
+    _lmao_surf      = None
     shop_open       = False
     shop_tab        = "boards"
     scroll_shop     = 0
@@ -1192,6 +1207,7 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                     elif data["type"] == "chat":
                         txt = str(data.get("text", ""))[:120]
                         chat_messages.append({"text": "Opp: " + txt, "mine": False})
+                        if len(chat_messages) > 50: chat_messages.pop(0)
                     elif data["type"] == "admin_win":
                         gs.game_over = True
                         gs.winner    = B if my_color == W else W
@@ -1338,6 +1354,7 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                         msg = chat_input.strip()[:120]
                         if msg:
                             chat_messages.append({"text": "You: " + msg, "mine": True})
+                            if len(chat_messages) > 50: chat_messages.pop(0)
                             try: conn.send({"type": "chat", "text": msg})
                             except: pass
                             chat_input = ""
@@ -1646,12 +1663,13 @@ def _pygame_loop(gs: GameState, tracker, conn=None, my_color=None, save=None,
                 loss_fired = True
 
         if loss_ticks is not None and not reviewing:
-            surf = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
-            r = surf.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
-            bg = pygame.Surface((r.width + 24, r.height + 16), pygame.SRCALPHA)
+            if _lmao_surf is None:
+                _lmao_surf = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
+            r = _lmao_surf.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
+            bg = _cached_surf("loss_bg", r.width + 24, r.height + 16)
             bg.fill((0, 0, 0, 180))
             screen.blit(bg, (r.x - 12, r.y - 8))
-            screen.blit(surf, r)
+            screen.blit(_lmao_surf, r)
 
         if cheat_detected and not reviewing:
             _draw_cheat_banner(screen)
@@ -1909,8 +1927,7 @@ def draw_checkers_sidebar(surf, cs: CheckersState, scroll: int = 0, flip_manual:
 
     HIST_H = 200
     ROW_H  = 18
-    hist_buf = pygame.Surface((SIDEBAR_W, HIST_H), pygame.SRCALPHA)
-    hist_buf.fill((0, 0, 0, 0))
+    hist_buf = _cached_surf("ck_hist", SIDEBAR_W, HIST_H)
 
     pairs = []
     for m in cs.move_history:
@@ -1971,7 +1988,7 @@ def _ck_gameover_rects():
 
 
 def draw_checkers_game_over(surf, cs: CheckersState):
-    ov = pygame.Surface((WINDOW_W, WINDOW_H), pygame.SRCALPHA)
+    ov = _cached_surf("ck_gameover_ov", WINDOW_W, WINDOW_H)
     ov.fill((0, 0, 0, 200)); surf.blit(ov, (0, 0))
     panel, review, again, quit_ = _ck_gameover_rects()
     pygame.draw.rect(surf, BG_SIDEBAR, panel, border_radius=12)
@@ -2024,6 +2041,7 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
     loss_ticks         = None
     loss_fired         = False
     cheat_detected     = False
+    _lmao_surf         = None
     shop_open          = False
     shop_tab           = "boards"
     scroll_shop        = 0
@@ -2383,12 +2401,13 @@ def _checkers_loop(cs: CheckersState, save=None, conn=None, my_color=None):
             screen.blit(wt_s, wt_r)
 
         if loss_ticks is not None and not reviewing:
-            lmao_s = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
-            lmao_r = lmao_s.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
-            lmao_bg = pygame.Surface((lmao_r.width + 24, lmao_r.height + 16), pygame.SRCALPHA)
+            if _lmao_surf is None:
+                _lmao_surf = FONTS["xl"].render("You suck lmao", True, (255, 80, 80))
+            lmao_r = _lmao_surf.get_rect(center=(WINDOW_W // 2, WINDOW_H // 2))
+            lmao_bg = _cached_surf("ck_loss_bg", lmao_r.width + 24, lmao_r.height + 16)
             lmao_bg.fill((0, 0, 0, 180))
             screen.blit(lmao_bg, (lmao_r.x - 12, lmao_r.y - 8))
-            screen.blit(lmao_s, lmao_r)
+            screen.blit(_lmao_surf, lmao_r)
 
         if cs.game_over and not reviewing:
             draw_checkers_game_over(screen, cs)
